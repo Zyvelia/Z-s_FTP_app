@@ -54,9 +54,9 @@ class SFTPConfigurationTests(unittest.TestCase):
 
     def test_sftp_path_confinement(self):
         (self.share / 'safe').mkdir()
-        ((self.share / 'safe' / 'file.txt').resolve()).write_text('hello')
-        self.assertEqual(resolve_share(self.share, '/safe/file.txt'), self.share / 'safe' / 'file.txt')
-        self.assertEqual(resolve_share(self.share, '/new.txt', allow_missing=True), self.share / 'new.txt')
+        (self.share / 'safe' / 'file.txt').write_text('hello')
+        self.assertEqual(resolve_share(self.share, '/safe/file.txt'), self.share.resolve() / 'safe' / 'file.txt')
+        self.assertEqual(resolve_share(self.share, '/new.txt', allow_missing=True), self.share.resolve() / 'new.txt')
         with self.assertRaises(PermissionError): resolve_share(self.share, '/../outside', allow_missing=True)
         with self.assertRaises(PermissionError): resolve_share(self.share, '/safe/../../outside', allow_missing=True)
         with self.assertRaises(PermissionError): resolve_share(self.share, 'bad\\name', allow_missing=True)

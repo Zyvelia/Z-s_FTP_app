@@ -83,7 +83,7 @@ class OptionalAdapterTests(unittest.TestCase):
             args, kwargs = mock.call_args
             self.assertEqual(args[0], [sys.executable, str((root/'main.py').resolve())])
             self.assertFalse(kwargs['shell'])
-            self.assertEqual(kwargs['cwd'], str(root))
+            self.assertEqual(kwargs['cwd'], str(root.resolve()))
 
     def test_prefer_exe_if_present(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -110,8 +110,8 @@ class ProjectLayoutTests(unittest.TestCase):
 
     def test_installer_bumped(self):
         spec = (ROOT/'packaging'/'ZFTP.iss').read_text()
-        self.assertIn('2.1.7', spec)
-        self.assertIn('ZFTP_Setup_v2.1.7', spec)
+        self.assertIn('2.1.8', spec)
+        self.assertIn('ZFTP_Setup_v2.1.8', spec)
 
 if __name__ == '__main__':
     unittest.main()

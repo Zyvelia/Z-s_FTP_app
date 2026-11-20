@@ -31,7 +31,7 @@ class DashboardTests(unittest.TestCase):
     def test_style_and_build_scripts(self):
         for selector in ('appSidebar', 'browserCard', 'transferCard', 'stageRibbon'):
             self.assertIn(selector, CSS)
-        self.assertIn('2.1.7', (ROOT / 'packaging' / 'ZFTP.iss').read_text())
+        self.assertIn('2.1.8', (ROOT / 'packaging' / 'ZFTP.iss').read_text())
         self.assertTrue((ROOT / 'build_all.bat').is_file())
         self.assertTrue((ROOT / 'assets' / 'zftp_icon.ico').is_file())
 
