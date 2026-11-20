@@ -46,7 +46,7 @@ class Change:
     remote_size: int | None = None
 
 
-def inventory_local(root: Path, cancelled=lambda: False) -> Inventory:
+def inventory_local(root: Path, cancelled=lambda: False, *, selected=None) -> Inventory:
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError('Root must be a non-symlink directory')
@@ -60,7 +60,7 @@ def inventory_local(root: Path, cancelled=lambda: False) -> Inventory:
         if depth > MAX_DEPTH: raise ScanLimitError('Local tree exceeds maximum depth')
         for child in folder.iterdir():
             if cancelled(): raise InterruptedError('Scan cancelled')
-            if child.is_symlink(): continue
+            if child.is_symlink() or (depth == 0 and selected is not None and child.name not in selected): continue
             name = segment(child.name)
             rel = f'{prefix}/{name}' if prefix else name
             seen += 1
@@ -73,7 +73,7 @@ def inventory_local(root: Path, cancelled=lambda: False) -> Inventory:
     return Inventory(files, frozenset(folders))
 
 
-def inventory_remote(backend, root: str, cancelled=lambda: False) -> Inventory:
+def inventory_remote(backend, root: str, cancelled=lambda: False, *, selected=None) -> Inventory:
     """Walk only within root; restore original cwd even if a scan fails."""
     root = posixpath.normpath(root)
     if not root.startswith('/'):
@@ -91,7 +91,7 @@ def inventory_remote(backend, root: str, cancelled=lambda: False) -> Inventory:
             backend.cwd(dirname)
             for entry in backend.list_dir():
                 if cancelled(): raise InterruptedError('Scan cancelled')
-                if getattr(entry, 'is_link', False): continue
+                if getattr(entry, 'is_link', False) or (depth == 0 and selected is not None and entry.name not in selected): continue
                 name = segment(entry.name)
                 rel = f'{prefix}/{name}' if prefix else name
                 seen += 1

@@ -23,6 +23,8 @@ class Transfer:
     attempts: int = 0
     speed_bps: float = 0.0
     eta_seconds: float | None = None
+    children: tuple[Transfer, ...] = ()
+    skipped: int = 0
 
     @property
     def name(self):
@@ -33,7 +35,7 @@ class TransferQueue:
         self.jobs: list[Transfer] = []
 
     def add(self, transfer: Transfer):
-        if transfer.direction not in ('upload', 'download', 'mkdir_local', 'mkdir_remote'):
+        if transfer.direction not in ('upload', 'download', 'mkdir_local', 'mkdir_remote', 'download_folder'):
             raise ValueError('Invalid transfer direction')
         if not transfer.source or not transfer.destination:
             raise ValueError('Source and destination required')
@@ -42,10 +44,12 @@ class TransferQueue:
                and j.direction == transfer.direction and j.remote_dir == transfer.remote_dir
                and j.destination == transfer.destination for j in self.jobs):
             raise FileExistsError('Destination already reserved by another queued transfer')
-        if transfer.direction == 'download' and any(
-            j.status not in TERMINAL and j.direction == 'download'
-            and Path(j.destination) == Path(transfer.destination) for j in self.jobs
-        ):
+        def download_targets(job):
+            paths = job.children if job.direction == 'download_folder' else (job,)
+            return {Path(part.destination) for part in paths if part.direction == 'download'}
+
+        targets = download_targets(transfer)
+        if any(targets & download_targets(job) for job in self.jobs if job.status not in TERMINAL):
             raise FileExistsError('Local download destination already reserved')
         self.jobs.append(transfer)
         return transfer
@@ -56,7 +60,7 @@ class TransferQueue:
         for job in self.jobs:
             if job.session_id == session_id and job.status == 'Queued':
                 job.status = 'Running'
-                job.phase = 'Uploading' if job.direction == 'upload' else ('Downloading' if job.direction == 'download' else 'Processing')
+                job.phase = 'Uploading' if job.direction == 'upload' else ('Downloading' if job.direction in ('download', 'download_folder') else 'Processing')
                 return job
         return None
 

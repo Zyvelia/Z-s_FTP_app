@@ -67,25 +67,27 @@ class TransfersViewMixin:
         entries = self.selected_remote_files(tab)
         if not entries:
             QMessageBox.information(self, 'Select files', 'Select one or more remote files or folders.'); return
-        self.enqueue_remote_items(tab, [e.name for e in entries])
-    def enqueue_remote_items(self, tab, names):
+        folder = QFileDialog.getExistingDirectory(self, 'Choose download destination', str(self.local_path))
+        if folder:
+            self.enqueue_remote_items(tab, [e.name for e in entries], Path(folder))
+    def enqueue_remote_items(self, tab, names, destination=None):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.closing: return
-        root, local = state.remote_path, self.local_path
+        root, local = state.remote_path, self.local_path if destination is None else destination
         valid = {e.name: e for e in state.entries if not getattr(e, 'is_link', False)}
         names = [name for name in names if name in valid]
         if not names: return
         if not any(valid[n].is_dir for n in names):
             self.enqueue_downloads(tab, names, root, local)
             return
+        selected = set(names)
         def scan(_):
-            remote = inventory_remote(state.backend, root, lambda: state.cancelled)
-            local_inv = inventory_local(local, lambda: state.cancelled)
-            selected = [name for name in names if name in remote.files or name in remote.folders]
-            changes = plan(local_inv, remote, 'download')
-            return [c for c in changes if any(c.path == n or c.path.startswith(n + '/') for n in selected)]
+            remote = inventory_remote(state.backend, root, lambda: state.cancelled, selected=selected)
+            local_inv = inventory_local(local, lambda: state.cancelled, selected=selected)
+            return plan(local_inv, remote, 'download')
         def ready(changes):
-            self.show_changes_and_enqueue(tab, changes, root, local, 'Download selected folders')
+            self.show_changes_and_enqueue(tab, changes, root, local, 'Download selected folders',
+                                          folder_batch=names[0] if len(names) == 1 else 'Selected items')
         self.run_session_job(tab, 'Comparing remote folders', scan, ready)
     def upload(self):
         tab = self.current_tab()
@@ -134,12 +136,17 @@ class TransfersViewMixin:
         def ready(changes):
             self.show_changes_and_enqueue(tab, changes, remote_root, local_root, choice)
         self.run_session_job(tab, 'Comparing directory trees', scan, ready)
-    def show_changes_and_enqueue(self, tab, changes, remote_root, local_root, title):
+    def show_changes_and_enqueue(self, tab, changes, remote_root, local_root, title, *, folder_batch=None):
         """Explicit preview and confirmation before adding any recursive jobs."""
         if tab not in self.sessions or not tab.state.connected: return
         dialog = QDialog(self); dialog.setWindowTitle(title + ' — preview')
         dialog.resize(840, 550)
         layout = QVBoxLayout(dialog)
+        if folder_batch is not None:
+            location = QLabel(f'Download destination: {local_root}')
+            location.setTextFormat(Qt.PlainText)
+            location.setWordWrap(True)
+            layout.addWidget(location)
         layout.addWidget(QLabel('No files are deleted or overwritten. Same-size matches are NOT checksum-verified.'))
         table = QTableWidget(len(changes), 4)
         table.setHorizontalHeaderLabels(['Action', 'Relative path', 'Local bytes', 'Remote bytes'])
@@ -165,8 +172,8 @@ class TransfersViewMixin:
         cancel.clicked.connect(dialog.reject); confirm.clicked.connect(dialog.accept)
         if dialog.exec() != QDialog.Accepted: return
         policy = 'keep_both' if conflict_option.currentIndex() == 1 else 'skip'
-        self.enqueue_changes(tab, changes, remote_root, local_root, policy)
-    def enqueue_changes(self, tab, changes, remote_root, local_root, policy='skip', *, silent=False):
+        self.enqueue_changes(tab, changes, remote_root, local_root, policy, folder_batch=folder_batch)
+    def enqueue_changes(self, tab, changes, remote_root, local_root, policy='skip', *, silent=False, folder_batch=None):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.closing: return
         sid = str(id(tab)); local_root = Path(local_root)
@@ -184,7 +191,7 @@ class TransfersViewMixin:
                     target = safe_local_target(local_root, change.path)
                     occupied = reserved_copies.setdefault(target.parent,
                         {p.name for p in target.parent.iterdir()} if target.parent.is_dir() else set())
-                    for job in self.queue.jobs:
+                    for job in (part for queued in self.queue.jobs for part in (queued.children or (queued,))):
                         if job.direction == 'download' and Path(job.destination).parent == target.parent:
                             occupied.add(Path(job.destination).name)
                     renamed = unique_name(target.name, occupied)
@@ -211,9 +218,22 @@ class TransfersViewMixin:
         # Directory creation must happen before dependent transfers.
         rank = {'mkdir_local':0, 'mkdir_remote':0, 'upload':1, 'download':1}
         tasks.sort(key=lambda t: (rank[t.direction], t.destination.count('/') + t.remote_dir.count('/')))
-        for item in tasks:
-            try: self.queue.add(item); accepted += 1
-            except (OSError, ValueError) as exc: rejected.append(f'{item.source}: {exc}')
+        if folder_batch is not None and tasks:
+            skipped = len(changes) - len(tasks)
+            group = Transfer(sid, 'download_folder', folder_batch, str(local_root),
+                             remote_root, str(local_root), children=tuple(tasks),
+                             total=len(tasks), skipped=skipped)
+            try:
+                self.queue.add(group)
+                accepted = len(tasks)
+            except (OSError, ValueError) as exc:
+                rejected.append(str(exc))
+        else:
+            for item in tasks:
+                try: self.queue.add(item); accepted += 1
+                except (OSError, ValueError) as exc: rejected.append(f'{item.source}: {exc}')
+        if folder_batch is not None and not tasks and not rejected:
+            QMessageBox.information(self, 'Nothing queued', 'No new files or folders to download under the selected policy.')
         self.render_queue()
         if accepted: self.log(f'Queued {accepted} recursive/sync operations for {state.host}')
         if rejected and not silent: QMessageBox.warning(self, 'Some entries were skipped', '\n'.join(rejected[:15]))
@@ -300,7 +320,7 @@ class TransfersViewMixin:
             eta_text = ('—' if item.status in ('Queued', 'Completed', 'Failed', 'Cancelled')
                         else ('Checking…' if stage == 'Verifying' else
                               'Finishing…' if stage in ('Renaming', 'Finalizing') else format_eta(eta)))
-            for col, value in enumerate((host, item.direction.title(), item.name, pct,
+            for col, value in enumerate((host, ('Folder download' if item.children else item.direction.title()), item.name, pct,
                                          speed_text, eta_text, str(attempts),
                                          stage + (': ' + item.error if item.error else ''))):
                 if col == 3:
@@ -327,7 +347,9 @@ class TransfersViewMixin:
                 value = 100
             bar.setValue(value)
             bar.setTextVisible(True)
-            if item.status == 'Running' and value == 100:
+            if item.children:
+                bar.setFormat(f'{item.count} / {item.total} items')
+            elif item.status == 'Running' and value == 100:
                 # 100% of bytes sent is NOT the same as a completed job.
                 bar.setFormat(f'100% sent · {stage}' if item.direction == 'upload'
                               else f'100% received · {stage}')
@@ -429,13 +451,19 @@ class TransfersViewMixin:
                                     self.retry_limit.value(), self.backoff_delay.value(),
                                     self.chunk_select.currentData())
         item.attempts = 1
-        verify_enabled = self.verify_checksums.isChecked() and item.direction in ('upload', 'download')
+        verify_checksums = self.verify_checksums.isChecked()
         item.speed_bps = 0.
         item.eta_seconds = None
         self.transfer_metrics.pop(item.id, None)
 
-        def operation(progress):
+        def perform(item, progress):
             backend = state.backend
+            verify_enabled = verify_checksums and item.direction in ('upload', 'download')
+            if item.direction == 'mkdir_local':
+                dest = Path(item.destination)
+                if dest.is_symlink() or dest.is_file(): raise FileExistsError(dest)
+                dest.mkdir(parents=True, exist_ok=True)
+                return 0, None
             verified_digest = [None]
             def attempt():
                 verified_digest[0] = None
@@ -452,11 +480,6 @@ class TransfersViewMixin:
                         except Exception:
                             backend.cwd(item.remote_dir)
                             backend.mkdir(item.destination)
-                        return 0
-                    if item.direction == 'mkdir_local':
-                        dest = Path(item.destination)
-                        if dest.is_symlink() or dest.is_file(): raise FileExistsError(dest)
-                        dest.mkdir(parents=True, exist_ok=True)
                         return 0
                     if item.direction == 'upload':
                         def staged_check(partial):
@@ -500,12 +523,59 @@ class TransfersViewMixin:
             progress('@stage:Finalizing', None)
             return (result, digest)
 
+        def operation(progress):
+            if not item.children:
+                return perform(item, progress)
+            root = Path(item.local_dir)
+            next_update = 0.0
+            for index, child in enumerate(item.children):
+                if state.cancelled:
+                    raise InterruptedError('Folder download cancelled')
+                target = Path(child.destination)
+                safe_local_target(root, target.relative_to(root).as_posix())
+                now = time.monotonic()
+                if now >= next_update:
+                    progress(index, len(item.children))
+                    progress(f'@stage:{index + 1}/{len(item.children)} · {target.name}', None)
+                    next_update = now + 0.15
+                def child_progress(count, total):
+                    nonlocal next_update
+                    now = time.monotonic()
+                    if now < next_update:
+                        return
+                    if isinstance(count, str):
+                        detail = count.removeprefix('@stage:')
+                    elif total:
+                        detail = f'{min(100, count * 100 // total)}%'
+                    else:
+                        detail = f'{count:,} bytes'
+                    progress(f'@stage:{index + 1}/{len(item.children)} · {target.name} · {detail}', None)
+                    next_update = now + 0.15
+
+                try:
+                    perform(child, child_progress)
+                except InterruptedError:
+                    progress(index, len(item.children))
+                    raise
+                except Exception as exc:
+                    progress(index, len(item.children))
+                    raise RuntimeError(f'{target.relative_to(root)}: {exc}') from exc
+            progress(len(item.children), len(item.children))
+            return (None, None)
+
         def after(result):
             self.queue.finish(item)
             self.record_transfer(item, state, result[1])
-            self.notify('success', 'Transfer complete', f'{item.name} · {item.direction}')
+            if item.children:
+                item.count = len(item.children)
+                summary = f'{item.name} · {len(item.children)} items · {item.destination}'
+                if item.skipped:
+                    summary += f' · {item.skipped} skipped'
+                self.notify('success', 'Folder download complete', summary)
+            else:
+                self.notify('success', 'Transfer complete', f'{item.name} · {item.direction}')
             self.render_queue()
-            if item.direction in ('download', 'mkdir_local'):
+            if item.direction in ('download', 'mkdir_local', 'download_folder'):
                 if self.local_path == Path(item.local_dir): self.set_local_path(self.local_path)
             else:
                 tab.directory_cache.invalidate(item.remote_dir)
@@ -527,7 +597,7 @@ class TransfersViewMixin:
             return False
 
         # run_session_job calls the error handler before its own transfer cleanup.
-        self.run_session_job(tab, f'{item.direction.title()}: {item.name}', operation,
+        self.run_session_job(tab, f'{"Folder download" if item.children else item.direction.title()}: {item.name}', operation,
                              after, on_error, transfer=True,
                              progress_callback=lambda count, total: self.on_transfer_progress(item, count, total))
     def on_transfer_progress(self, item, count, total):
@@ -538,6 +608,9 @@ class TransfersViewMixin:
             self.render_queue()
             return
         self.queue.progress(item, count, total)
+        if item.children:
+            self.render_queue()
+            return
         estimator = self.transfer_metrics.get(item.id)
         if estimator is None:
             estimator = ETAEstimator()

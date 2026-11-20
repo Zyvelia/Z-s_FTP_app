@@ -14,7 +14,7 @@ if not exist "%ISCC%" (
 )
 "%ISCC%" "packaging\ZFTP.iss"
 if errorlevel 1 (echo ERROR: Installer compilation failed. & exit /b 1)
-if not exist "installer_output\ZFTP_Setup_v2.1.9.exe" (echo ERROR: Installer output missing. & exit /b 1)
+if not exist "installer_output\ZFTP_Setup_v2.1.10.exe" (echo ERROR: Installer output missing. & exit /b 1)
 echo.
-echo SUCCESS: %CD%\installer_output\ZFTP_Setup_v2.1.9.exe
+echo SUCCESS: %CD%\installer_output\ZFTP_Setup_v2.1.10.exe
 exit /b 0

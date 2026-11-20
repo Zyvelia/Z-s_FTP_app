@@ -15,4 +15,4 @@ class V12Layout(unittest.TestCase):
         self.assertIn('self.server_panel = ServerPanel(self)', source)
         self.assertIn('self.sftp_server_panel = SFTPServerPanel(self)', source)
         self.assertIn('build_exe.bat', (ROOT/'README.md').read_text(encoding='utf8'))
-        self.assertIn('2.1.9', (ROOT/'packaging/ZFTP.iss').read_text(encoding='utf8'))
+        self.assertIn('2.1.10', (ROOT/'packaging/ZFTP.iss').read_text(encoding='utf8'))

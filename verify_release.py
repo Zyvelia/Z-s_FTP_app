@@ -19,12 +19,12 @@ def check_layout():
     if missing:
         raise RuntimeError('Missing release files: ' + ', '.join(missing))
     installer = (ROOT/'packaging/ZFTP.iss').read_text(encoding='utf-8')
-    assert '#define AppVersion "2.1.9"' in installer
-    assert 'OutputBaseFilename=ZFTP_Setup_v2.1.9' in installer
+    assert '#define AppVersion "2.1.10"' in installer
+    assert 'OutputBaseFilename=ZFTP_Setup_v2.1.10' in installer
     assert 'PrivilegesRequired=lowest' in installer
     assert 'Source: "..\\dist\\ZFTP\\*"' in installer
     assert 'ZFTP.exe' in (ROOT/'build_exe.bat').read_text()
-    assert 'ZFTP_Setup_v2.1.9.exe' in (ROOT/'build_installer.bat').read_text()
+    assert 'ZFTP_Setup_v2.1.10.exe' in (ROOT/'build_installer.bat').read_text()
     print('Release file layout and installer metadata: PASS')
 
 
