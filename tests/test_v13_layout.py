@@ -19,5 +19,5 @@ class V13Layout(unittest.TestCase):
                          'zftp/services/remote_management.py', 'build_exe.bat'):
             self.assertTrue((ROOT/filename).exists(), filename)
         installer = (ROOT/'packaging/ZFTP.iss').read_text(encoding='utf8')
-        self.assertIn('2.1.11', installer)
-        self.assertIn('ZFTP_Setup_v2.1.11', installer)
+        self.assertIn('2.1.12', installer)
+        self.assertIn('ZFTP_Setup_v2.1.12', installer)

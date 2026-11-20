@@ -95,6 +95,14 @@ class ShutdownControlsMixin:
         if not self.sessions and not self.jobs:
             self._quit_timer.stop()
             self.close()
+    def _finish_close(self, event):
+        if self.launch_pending_updater():
+            event.accept()
+        else:
+            self._tray_force_quit = False
+            self._quit_requested = False
+            event.ignore()
+
     def closeEvent(self, event):
         if (not self._tray_force_quit and not self._quit_requested and self._close_to_tray
                 and self.hide_to_tray()):
@@ -104,12 +112,13 @@ class ShutdownControlsMixin:
             QMessageBox.information(self, 'Server running',
                                     'Stop the built-in server before quitting Z FTP.')
             self._tray_force_quit = False
+            self._pending_updater = None
             event.ignore()
             return
         if self._quit_requested:
             if not self.sessions and not self.jobs:
                 self._quit_timer.stop()
-                event.accept()
+                self._finish_close(event)
             else:
                 event.ignore()
             return
@@ -123,12 +132,13 @@ class ShutdownControlsMixin:
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if response != QMessageBox.Yes:
                 self._tray_force_quit = False
+                self._pending_updater = None
                 event.ignore()
                 return
             for state in busy_sessions:
                 state.cancelled = True
         if not self.sessions and not self.jobs:
-            event.accept()
+            self._finish_close(event)
             return
         # Idle tabs disconnect automatically; waiting for a worker stays
         # asynchronous, preserving safe ownership of sockets and Qt signals.

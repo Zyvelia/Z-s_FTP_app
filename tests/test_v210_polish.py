@@ -21,5 +21,5 @@ class PolishTests(unittest.TestCase):
     def test_style_and_build_version(self):
         for name in ('jobProgress','footerConnection','appSidebar'):
             self.assertIn(name,CSS)
-        self.assertIn('2.1.11',(ROOT/'packaging/ZFTP.iss').read_text())
+        self.assertIn('2.1.12',(ROOT/'packaging/ZFTP.iss').read_text())
 if __name__=='__main__': unittest.main()

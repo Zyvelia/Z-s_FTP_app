@@ -73,8 +73,8 @@ class ModularUITests(unittest.TestCase):
             self.assertIn(fragment, source)
 
     def test_preserved_build_metadata(self):
-        self.assertIn('AppVersion "2.1.11"', (ROOT / 'packaging' / 'ZFTP.iss').read_text())
-        self.assertIn('ZFTP_Setup_v2.1.11', (ROOT / 'build_installer.bat').read_text())
+        self.assertIn('AppVersion "2.1.12"', (ROOT / 'packaging' / 'ZFTP.iss').read_text())
+        self.assertIn('ZFTP_Setup_v2.1.12', (ROOT / 'build_installer.bat').read_text())
         self.assertTrue((ROOT / 'optional_zmt_adapter' / 'launcher.py').exists())
         self.assertTrue((ROOT / 'docs/changelog/CHANGELOG_v2.1.6.md').exists())
 

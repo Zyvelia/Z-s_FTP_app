@@ -44,7 +44,7 @@ TOPICS = (
     )),
     ('Tray & Windows updates', (
         ('Background operation', 'Z FTP can keep transfers running in the tray. Use the tray menu to reopen the window or quit the app.'),
-        ('Check for updates', 'Finish transfers and quit Z FTP, including its tray icon. Run Update-ZFTP.bat beside ZFTP.exe, or use Z FTP - Check for updates in the Start menu. The default install folder is %LOCALAPPDATA%\\Programs\\ZFTP.'),
+        ('Check for updates', 'Finish transfers and choose Check for updates from the tray menu. Z FTP closes before the updater proceeds. If the app is already closed, run Update-ZFTP.bat beside ZFTP.exe, or use Z FTP - Check for updates in the Start menu. The default install folder is %LOCALAPPDATA%\\Programs\\ZFTP.'),
     )),
 )
 

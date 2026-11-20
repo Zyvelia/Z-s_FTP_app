@@ -26,7 +26,7 @@ class TrayControlsTests(unittest.TestCase):
     def test_tray_actions_are_available(self):
         for command in ('Hide Z FTP', 'Open Transfers', 'Open Activity',
                         'Cancel queued transfers…', 'Cancel active transfers…',
-                        'Close button hides to tray', 'Quit Z FTP'):
+                        'Close button hides to tray', 'Check for updates', 'Quit Z FTP'):
             with self.subTest(command=command):
                 self.assertIn(command, SOURCE)
 
@@ -51,6 +51,15 @@ class TrayControlsTests(unittest.TestCase):
         self.assertIn('self._tray_force_quit = True', body)
         self.assertIn('self.close()', body)
 
+    def test_tray_update_waits_for_graceful_shutdown(self):
+        request = method_text('update_from_tray')
+        self.assertIn("('Queued', 'Running')", request)
+        self.assertIn('self.quit_from_tray()', request)
+        self.assertIn('self.launch_pending_updater()', method_text('_finish_close'))
+        self.assertIn("'-WaitForProcessId'", method_text('launch_pending_updater'))
+        updater = (ROOT / 'Update-ZFTP.ps1').read_text(encoding='utf-8')
+        self.assertLess(updater.index('.WaitForExit(30000)'), updater.index('Invoke-WebRequest'))
+
     def test_cancellation_requires_confirmation(self):
         for method in ('tray_cancel_queued', 'tray_cancel_active'):
             body = method_text(method)
@@ -67,8 +76,8 @@ class TrayControlsTests(unittest.TestCase):
 
     def test_release_version_updated(self):
         installer = (ROOT / 'packaging' / 'ZFTP.iss').read_text(encoding='utf-8')
-        self.assertIn('AppVersion "2.1.11"', installer)
-        self.assertIn('ZFTP_Setup_v2.1.11', installer)
+        self.assertIn('AppVersion "2.1.12"', installer)
+        self.assertIn('ZFTP_Setup_v2.1.12', installer)
 
 
 if __name__ == '__main__':

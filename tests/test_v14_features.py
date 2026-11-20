@@ -110,8 +110,8 @@ class ProjectLayoutTests(unittest.TestCase):
 
     def test_installer_bumped(self):
         spec = (ROOT/'packaging'/'ZFTP.iss').read_text()
-        self.assertIn('2.1.11', spec)
-        self.assertIn('ZFTP_Setup_v2.1.11', spec)
+        self.assertIn('2.1.12', spec)
+        self.assertIn('ZFTP_Setup_v2.1.12', spec)
 
 if __name__ == '__main__':
     unittest.main()

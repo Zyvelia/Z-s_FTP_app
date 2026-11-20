@@ -1,5 +1,5 @@
 # Run from an installed copy of Z FTP with Windows PowerShell 5.1 or newer.
-param([switch]$CheckOnly)
+param([switch]$CheckOnly, [int]$WaitForProcessId = 0, [switch]$PauseOnExit)
 
 $ErrorActionPreference = 'Stop'
 $repo = 'Zyvelia/Z-s_FTP_app'
@@ -8,6 +8,15 @@ $application = Join-Path $PSScriptRoot 'ZFTP.exe'
 $tempDirectory = $null
 
 try {
+    if ($WaitForProcessId -gt 0) {
+        $closingApp = Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue
+        if ($closingApp -and $closingApp.ProcessName -eq 'ZFTP') {
+            Write-Host 'Waiting for Z FTP to close...'
+            if (!$closingApp.WaitForExit(30000)) {
+                throw 'Z FTP did not close. Quit it fully before checking for updates.'
+            }
+        }
+    }
     if (!(Test-Path -LiteralPath $application -PathType Leaf) -or
         !(Test-Path -LiteralPath $versionFile -PathType Leaf)) {
         throw 'Install Z FTP with the Windows installer before using this updater.'
@@ -81,5 +90,8 @@ try {
 } finally {
     if ($tempDirectory) {
         Remove-Item -LiteralPath $tempDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($PauseOnExit) {
+        [void](Read-Host 'Press Enter to close this updater')
     }
 }

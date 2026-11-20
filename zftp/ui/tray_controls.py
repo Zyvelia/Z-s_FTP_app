@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 import os
 import time
 import posixpath
@@ -82,6 +83,8 @@ class TrayControlsMixin:
         self._tray_notifications_action.toggled.connect(self.notifications_enabled.setChecked)
         self.notifications_enabled.toggled.connect(self._tray_notifications_action.setChecked)
         menu.addSeparator()
+        update_action = menu.addAction('Check for updates')
+        update_action.triggered.connect(self.update_from_tray)
         quit_action = menu.addAction('Quit Z FTP')
         quit_action.triggered.connect(self.quit_from_tray)
         self.tray.setContextMenu(menu)
@@ -166,6 +169,42 @@ class TrayControlsMixin:
             if tab:
                 tab.state.cancelled = True
         self.statusBar().showMessage('Cancellation requested; waiting for active operations to stop safely…')
+    def update_from_tray(self):
+        if self._quit_requested:
+            return
+        install_dir = Path(sys.executable).parent
+        updater = install_dir / 'Update-ZFTP.ps1'
+        if (sys.platform != 'win32' or not getattr(sys, 'frozen', False)
+                or not updater.is_file() or not (install_dir / 'zftp-version.ini').is_file()):
+            self.show_from_tray()
+            QMessageBox.information(self, 'Updater unavailable',
+                                    'Install Z FTP with the Windows installer to use tray updates.')
+            return
+        if (any(state.busy for state in self.sessions.values())
+                or any(job.status in ('Queued', 'Running') for job in self.queue.jobs)
+                or self.server_panel.active_or_stopping or self.sftp_server_panel.active_or_stopping):
+            self.show_from_tray()
+            QMessageBox.information(self, 'Z FTP is busy',
+                                    'Finish queued and active transfers and stop any built-in servers before updating.')
+            return
+        self._pending_updater = updater
+        self.quit_from_tray()
+
+    def launch_pending_updater(self):
+        updater, self._pending_updater = self._pending_updater, None
+        if updater is None:
+            return True
+        system_root = Path(os.environ.get('SystemRoot', r'C:\Windows'))
+        powershell = system_root / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe'
+        try:
+            subprocess.Popen([str(powershell), '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                              '-File', str(updater), '-WaitForProcessId', str(os.getpid()), '-PauseOnExit'],
+                             cwd=updater.parent, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        except OSError as exc:
+            QMessageBox.warning(self, 'Could not start updater', str(exc))
+            return False
+        return True
+
     def quit_from_tray(self):
         # Explicit Quit always means the existing graceful disconnect procedure.
         self._tray_force_quit = True

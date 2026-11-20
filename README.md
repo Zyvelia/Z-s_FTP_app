@@ -12,15 +12,15 @@ Saved connections, independent server tabs, resumable transfers, SHA-256 verific
 
 ## Updating an installed copy
 
-Finish your transfers and quit Z FTP, including its tray icon. Open **Z FTP - Check for updates** from the Windows Start menu, or run `Update-ZFTP.bat` from the install folder. Z FTP checks the latest stable GitHub Release and, when a newer Windows installer exists, downloads and verifies it before opening Setup. Setup asks you to confirm installation. For a check without downloading, run `Update-ZFTP.bat -CheckOnly`.
+Finish your transfers, then right-click the Z FTP tray icon and choose **Check for updates**. Z FTP will disconnect and close before the updater proceeds. If Z FTP is already closed, open **Z FTP - Check for updates** from the Windows Start menu, or run `Update-ZFTP.bat` from the install folder. Z FTP checks the latest stable GitHub Release and, when a newer Windows installer exists, downloads and verifies it before opening Setup. Setup asks you to confirm installation. For a check without downloading, run `Update-ZFTP.bat -CheckOnly`.
 
 ## Building from source
 
 On Windows, install Python 3.11 or later and run `start_windows.bat`. Use `python verify_release.py` for the regression suite. Run `build_exe.bat` to build the app or `build_all.bat` to build the app and installer with Inno Setup 6.
 
-The release workflow builds a Windows installer when a matching version tag is pushed, then attaches it to a stable GitHub Release. Update the version in the app, installer, build script, and version assertions before tagging. The installer filename must match the tag (for example, `ZFTP_Setup_v2.1.11.exe` for `v2.1.11`).
+The release workflow builds a Windows installer when a matching version tag is pushed, then attaches it to a stable GitHub Release. Update the version in the app, installer, build script, and version assertions before tagging. The installer filename must match the tag (for example, `ZFTP_Setup_v2.1.12.exe` for `v2.1.12`).
 
-See the [v2.1.11 changelog](docs/changelog/CHANGELOG_v2.1.11.md), [release history](docs/RELEASE_HISTORY.md), and [security notes](docs/SECURITY.md).
+See the [v2.1.12 changelog](docs/changelog/CHANGELOG_v2.1.12.md), [release history](docs/RELEASE_HISTORY.md), and [security notes](docs/SECURITY.md).
 
 ### View or edit PS3 PARAM.SFO files
 
