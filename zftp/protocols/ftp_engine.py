@@ -238,6 +238,26 @@ class FTPBackend:
         self._ftp().retrbinary('RETR ' + name, take, blocksize=32768)
         return b''.join(chunks)
 
+    def read_prefix(self, name: str, length: int) -> bytes:
+        # An interrupted RETR can leave pending replies, so isolate it from browsing.
+        if self._reconnect_settings is None:
+            raise RuntimeError('No active FTP connection')
+        host, port, user, password, tls, timeout = self._reconnect_settings
+        isolated = FTPBackend()
+        try:
+            isolated.connect(host, port, user, password, tls=tls, timeout=timeout,
+                             encoding=self.control_encoding)
+            isolated.cwd(self.pwd())
+            ftp = isolated._ftp()
+            ftp.voidcmd('TYPE I')
+            with ftp.transfercmd('RETR ' + clean_remote_name(name)) as stream:
+                reader = stream.makefile('rb')
+                with reader:
+                    return reader.read(length)
+        finally:
+            if isolated.conn is not None:
+                isolated.conn.close()
+
     def write_new_bytes(self, name: str, data: bytes):
         import io
         name = clean_remote_name(name)

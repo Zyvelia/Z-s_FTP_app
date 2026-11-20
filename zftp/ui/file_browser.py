@@ -49,9 +49,10 @@ from zftp.ui.remote_tab import RemoteTab
 from zftp.services.param_sfo import ParamSfo
 from zftp.services.remote_management import MAX_EDITOR_BYTES, safe_save_remote_bytes
 from zftp.ui.sfo_editor import SfoEditor
+from zftp.ui.ps3_file_tools import Ps3FileToolsMixin
 
 
-class FileBrowserMixin:
+class FileBrowserMixin(Ps3FileToolsMixin):
     def set_local_path(self, path):
         path = Path(path)
         generation = self._local_render_gate.new()
@@ -219,6 +220,7 @@ class FileBrowserMixin:
                 for action in (download_action, rename_action, edit_action, permissions_action, delete_action):
                     if action: action.setEnabled(False)
             menu.addSeparator()
+        self.remote_ps3_tools(menu, tab, entry)
         new_action = menu.addAction('New folder…')
         refresh_action = menu.addAction('Refresh')
         picked = menu.exec(tab.table.viewport().mapToGlobal(point))

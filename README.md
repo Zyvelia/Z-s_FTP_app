@@ -25,3 +25,16 @@ See the [v2.1.8 changelog](docs/changelog/CHANGELOG_v2.1.8.md), [release history
 ### View or edit PS3 PARAM.SFO files
 
 In the remote browser, open the game’s folder, right-click `PARAM.SFO`, and choose **View / edit PARAM.SFO**. You can check fields such as `TITLE`, `TITLE_ID`, and `CATEGORY` without saving. The editor supports UTF-8 text and unsigned integers in their existing field space and shows raw fields as read-only. **Save with backup** checks whether the file changed since opening and keeps the original in the same remote folder.
+
+### PS3 file tools
+
+Right-click a remote file or folder and open **PS3 file tools**.
+
+- **Edit config** updates existing key/value entries in UTF-8 `.ini`, `.cfg`, and `.conf` files. The confirmation shows a diff.
+- **Edit boot plugins** reorders or removes lines in `boot_plugins.txt`. The editor checks each configured path before saving.
+- **View / edit hex** displays files up to 64 KiB and previews same-length edits by byte offset.
+- **Inspect PKG header** reads the first 128 bytes and compares the declared size with the directory listing.
+- **Browse game metadata** reads titles, title IDs, categories, and versions from up to 200 immediate child folders. Right-click a games folder or the empty space inside it.
+- **Preview image** opens PNG or JPEG files up to 1 MiB. For `ICON0.PNG`, you can select a replacement PNG up to 320×176.
+
+Remote writes check that the original file is still current and keep a backup beside it.

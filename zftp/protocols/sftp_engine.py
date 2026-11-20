@@ -194,6 +194,10 @@ class SFTPBackend:
             raise ValueError('Remote file is too large for the editor')
         return data
 
+    def read_prefix(self, name: str, length: int) -> bytes:
+        with self._sftp().open(self._path(name), 'rb') as source:
+            return source.read(length)
+
     def write_new_bytes(self, name: str, data: bytes):
         with self._sftp().open(self._path(name), 'x') as target:
             target.write(data)
