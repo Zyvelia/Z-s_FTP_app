@@ -26,6 +26,7 @@ class GUIv1SmokeTests(unittest.TestCase):
         self.assertEqual(window.main_sections.count(), 3)
         self.assertEqual(window.connection_badge.text(), '0 connected')
         self.assertFalse(window.server_panel.controller.running)
+        window.show()
         window.toggle_connection_setup()
         self.assertTrue(window.connection_setup.isHidden())
         window.toggle_connection_setup()

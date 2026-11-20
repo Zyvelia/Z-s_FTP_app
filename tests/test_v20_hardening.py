@@ -104,10 +104,10 @@ class HardeningTests(unittest.TestCase):
     def test_installer_version_and_script_guards(self):
         root = Path(__file__).resolve().parents[1]
         spec = (root/'packaging/ZFTP.iss').read_text()
-        self.assertIn('AppVersion "2.1.6"', spec)
-        self.assertIn('ZFTP_Setup_v2.1.6', spec)
+        self.assertIn('AppVersion "2.1.7"', spec)
+        self.assertIn('ZFTP_Setup_v2.1.7', spec)
         self.assertIn('ZFTP.exe', (root/'build_exe.bat').read_text())
-        self.assertIn('if not exist "installer_output\\ZFTP_Setup_v2.1.6.exe"', (root/'build_installer.bat').read_text())
+        self.assertIn('if not exist "installer_output\\ZFTP_Setup_v2.1.7.exe"', (root/'build_installer.bat').read_text())
         self.assertIn('PrivilegesRequired=lowest', spec)
         self.assertIn('DefaultDirName={localappdata}', spec)
 

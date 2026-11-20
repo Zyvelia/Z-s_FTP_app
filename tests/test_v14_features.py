@@ -81,7 +81,7 @@ class OptionalAdapterTests(unittest.TestCase):
             mock = Mock()
             launch_zftp(root, popen=mock)
             args, kwargs = mock.call_args
-            self.assertEqual(args[0], [sys.executable, str(root/'main.py')])
+            self.assertEqual(args[0], [sys.executable, str((root/'main.py').resolve())])
             self.assertFalse(kwargs['shell'])
             self.assertEqual(kwargs['cwd'], str(root))
 
@@ -93,7 +93,7 @@ class OptionalAdapterTests(unittest.TestCase):
             (root/'main.py').touch()
             mock = Mock()
             launch_zftp(root, popen=mock)
-            self.assertEqual(mock.call_args.args[0], [str(root/'dist'/'ZFTP'/'ZFTP.exe')])
+            self.assertEqual(mock.call_args.args[0], [str((root/'dist'/'ZFTP'/'ZFTP.exe').resolve())])
 
     def test_missing_source_returns_explicit_error(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -110,8 +110,8 @@ class ProjectLayoutTests(unittest.TestCase):
 
     def test_installer_bumped(self):
         spec = (ROOT/'packaging'/'ZFTP.iss').read_text()
-        self.assertIn('2.1.6', spec)
-        self.assertIn('ZFTP_Setup_v2.1.6', spec)
+        self.assertIn('2.1.7', spec)
+        self.assertIn('ZFTP_Setup_v2.1.7', spec)
 
 if __name__ == '__main__':
     unittest.main()

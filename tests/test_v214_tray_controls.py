@@ -67,8 +67,8 @@ class TrayControlsTests(unittest.TestCase):
 
     def test_release_version_updated(self):
         installer = (ROOT / 'packaging' / 'ZFTP.iss').read_text(encoding='utf-8')
-        self.assertIn('AppVersion "2.1.6"', installer)
-        self.assertIn('ZFTP_Setup_v2.1.6', installer)
+        self.assertIn('AppVersion "2.1.7"', installer)
+        self.assertIn('ZFTP_Setup_v2.1.7', installer)
 
 
 if __name__ == '__main__':

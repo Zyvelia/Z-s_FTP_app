@@ -37,8 +37,8 @@ class OrganizationTests(unittest.TestCase):
             self.assertTrue((ROOT/item).is_file(),item)
 
     def test_installer_and_application_versions(self):
-        self.assertIn('2.1.6', (ROOT/'packaging/ZFTP.iss').read_text())
-        self.assertIn('v2.1.6', (ROOT/'zftp/ui/main_window.py').read_text())
+        self.assertIn('2.1.7', (ROOT/'packaging/ZFTP.iss').read_text())
+        self.assertIn('v2.1.7', (ROOT/'zftp/ui/main_window.py').read_text())
 
 if __name__ == '__main__':
     unittest.main()

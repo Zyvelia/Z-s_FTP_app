@@ -19,8 +19,8 @@ class IntegrationLayoutTests(unittest.TestCase):
 
     def test_installer_version_and_scripts(self):
         spec = (ROOT / 'packaging' / 'ZFTP.iss').read_text(encoding='utf-8')
-        self.assertIn('2.1.6', spec)
-        self.assertIn('ZFTP_Setup_v2.1.6', spec)
+        self.assertIn('2.1.7', spec)
+        self.assertIn('ZFTP_Setup_v2.1.7', spec)
         self.assertTrue((ROOT / 'build_exe.bat').is_file())
         self.assertTrue((ROOT / 'build_installer.bat').is_file())
 

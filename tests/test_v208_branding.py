@@ -19,7 +19,7 @@ class BrandingTests(unittest.TestCase):
         self.assertIn('WizardImageFile',installer)
         self.assertIn('WizardSmallImageFile',installer)
         self.assertIn('SetupIconFile',installer)
-        self.assertIn('2.1.6',installer)
+        self.assertIn('2.1.7',installer)
 
     def test_build_all_chains_both(self):
         s=(ROOT/'build_all.bat').read_text()

@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'
+      PY_PYTHON: '3.12'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,6 +45,26 @@ jobs:
       - name: Build the app and installer
         shell: cmd
         run: call build_all.bat
+      - name: Smoke-test installer and updater
+        shell: powershell
+        run: |
+          $installer = "installer_output/ZFTP_Setup_$env:GITHUB_REF_NAME.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP 'Z FTP smoke test'
+          $setup = Start-Process -FilePath $installer -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$installDir`""
+          ) -Wait -PassThru
+          if ($setup.ExitCode -ne 0) {
+            throw "Installer exited with code $($setup.ExitCode)"
+          }
+          if (!(Test-Path -LiteralPath (Join-Path $installDir 'ZFTP.exe'))) {
+            throw 'The app executable was not installed'
+          }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          if (!(Select-String -LiteralPath (Join-Path $installDir 'zftp-version.ini') -Pattern "^Version=$([regex]::Escape($version))$")) {
+            throw 'The installed version is incorrect'
+          }
+          & (Join-Path $installDir 'Update-ZFTP.ps1') -CheckOnly
+          if (!$?) { throw 'The updater check failed' }
       - name: Publish Windows installer
         shell: pwsh
         env:
