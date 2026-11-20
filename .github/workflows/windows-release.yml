@@ -1,0 +1,54 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -cnotmatch '^v([0-9]+\.[0-9]+\.[0-9]+)$') {
+            throw "Expected a stable version tag, got $tag"
+          }
+          $version = $Matches[1]
+          if (!(Select-String -Path packaging/ZFTP.iss -SimpleMatch "#define AppVersion `"$version`"")) {
+            throw "Installer version does not match $tag"
+          }
+      - name: Install dependencies and run preflight
+        run: |
+          python -m pip install -r requirements.txt
+          python verify_release.py
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (!(Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") -and
+              !(Test-Path "$env:ProgramFiles\Inno Setup 6\ISCC.exe") -and
+              !(Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+            choco install innosetup --no-progress -y
+          }
+      - name: Build the app and installer
+        shell: cmd
+        run: call build_all.bat
+      - name: Publish Windows installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installer = "installer_output/ZFTP_Setup_$env:GITHUB_REF_NAME.exe"
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "Missing installer $installer"
+          }
+          gh release create $env:GITHUB_REF_NAME $installer --verify-tag --generate-notes --title "Z FTP $env:GITHUB_REF_NAME"
