@@ -62,6 +62,10 @@ def encode_editor_text(text: str, limit: int = MAX_EDITOR_BYTES) -> bytes:
 
 
 def safe_save_editor(backend, snapshot: EditorSnapshot, updated: str) -> str:
+    return safe_save_remote_bytes(backend, snapshot.name, snapshot.sha256, encode_editor_text(updated))
+
+
+def safe_save_remote_bytes(backend, name: str, expected_sha256: str, payload: bytes) -> str:
     """Stage edited data, preserve old file as backup, then swap via renames.
 
     A failed publish attempts rollback, leaving a backup/stage for recovery when
@@ -69,10 +73,11 @@ def safe_save_editor(backend, snapshot: EditorSnapshot, updated: str) -> str:
     A second hash comparison directly before publish reduces accidental races;
     external simultaneous writers still require server-side locking for certainty.
     """
-    name = validate_name(snapshot.name)
-    payload = encode_editor_text(updated)
+    name = validate_name(name)
+    if len(payload) > MAX_EDITOR_BYTES:
+        raise ValueError('Edited file exceeds the size limit')
     old = backend.read_bytes(name, MAX_EDITOR_BYTES)
-    if hashlib.sha256(old).hexdigest() != snapshot.sha256:
+    if hashlib.sha256(old).hexdigest() != expected_sha256:
         raise RemoteConflictError('Remote file changed since it was opened; save aborted')
     if old == payload:
         return ''
@@ -82,7 +87,7 @@ def safe_save_editor(backend, snapshot: EditorSnapshot, updated: str) -> str:
     backend.write_new_bytes(staged, payload)
     try:
         check = backend.read_bytes(name, MAX_EDITOR_BYTES)
-        if hashlib.sha256(check).hexdigest() != snapshot.sha256:
+        if hashlib.sha256(check).hexdigest() != expected_sha256:
             raise RemoteConflictError('Remote file changed during editing; save aborted')
         backend.rename(name, backup)
     except BaseException:

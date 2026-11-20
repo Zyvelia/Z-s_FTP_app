@@ -1,6 +1,7 @@
 """FileBrowserMixin: isolated Z FTP UI behavior, attached to the same main window."""
 from __future__ import annotations
 
+import hashlib
 import sys
 import os
 import time
@@ -45,6 +46,9 @@ from zftp.services.sync_engine import (Inventory, Change, inventory_local, inven
 
 from zftp.ui.ui_workers import Job, Events
 from zftp.ui.remote_tab import RemoteTab
+from zftp.services.param_sfo import ParamSfo
+from zftp.services.remote_management import MAX_EDITOR_BYTES, safe_save_remote_bytes
+from zftp.ui.sfo_editor import SfoEditor
 
 
 class FileBrowserMixin:
@@ -207,7 +211,8 @@ class FileBrowserMixin:
             download_action = menu.addAction('Download') if not entry.is_dir else menu.addAction('Download folder')
             menu.addSeparator()
             rename_action = menu.addAction('Rename…')
-            edit_action = menu.addAction('Edit text…') if not entry.is_dir else None
+            edit_label = 'View / edit PARAM.SFO…' if entry.name.lower().endswith('.sfo') else 'Edit text…'
+            edit_action = menu.addAction(edit_label) if not entry.is_dir else None
             permissions_action = menu.addAction('Permissions…')
             delete_action = menu.addAction('Delete empty folder…' if entry.is_dir else 'Delete permanently…')
             if entry.is_link:
@@ -470,10 +475,13 @@ class FileBrowserMixin:
         if not state or not state.connected or state.busy: return
         entry = tab.selected()
         if not entry or entry.is_dir or entry.is_link:
-            QMessageBox.information(self, 'Select text file', 'Select a regular remote file.'); return
+            QMessageBox.information(self, 'Select file', 'Select a regular remote file.'); return
         name = validate_name(entry.name)
         if entry.size is not None and entry.size > 1024 * 1024:
             QMessageBox.information(self, 'Too large', 'Editor supports files up to 1 MiB.'); return
+        if name.lower().endswith('.sfo'):
+            self.edit_remote_sfo(tab, state, name)
+            return
         def opened(snapshot):
             if tab not in self.sessions: return
             dialog = QDialog(self); dialog.setWindowTitle('Remote editor — ' + name)
@@ -504,6 +512,50 @@ class FileBrowserMixin:
                     QMessageBox.information(self, 'Edit saved', f'Saved. Original preserved on server as:\n{backup}')
             self.run_session_job(tab, 'Saving remote text with backup', action, complete)
         self.run_session_job(tab, 'Opening remote text', lambda _: read_editor_snapshot(state.backend, name), opened)
+    def edit_remote_sfo(self, tab, state, name):
+        def read(_):
+            folder = state.backend.pwd()
+            raw = state.backend.read_bytes(name, MAX_EDITOR_BYTES)
+            return folder, ParamSfo(raw)
+
+        def opened(result):
+            if self.sessions.get(tab) is not state:
+                return
+            folder, document = result
+            path = posixpath.join(folder, name)
+            dialog = SfoEditor(document, path, self)
+            accepted = dialog.exec() == QDialog.Accepted
+            changes = dialog.changes
+            dialog.deleteLater()
+            if not accepted:
+                return
+            revised = document.edited(changes)
+            if revised == document.raw:
+                return
+            if QMessageBox.question(self, 'Confirm PARAM.SFO edit',
+                    f'Save changes to {state.host}{path}?\n\n'
+                    'The original will be kept as a backup in the same remote folder. '
+                    'Altered metadata can affect how the PS3 recognizes this item.',
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+
+            def save(_):
+                if state.backend.pwd() != folder:
+                    raise RemoteConflictError('Remote folder changed. Open the PARAM.SFO again.')
+                digest = hashlib.sha256(document.raw).hexdigest()
+                return safe_save_remote_bytes(state.backend, name, digest, revised)
+
+            def saved(backup):
+                if backup:
+                    self.log(f'{state.host}: updated {path}; recovery backup {backup}')
+                    QMessageBox.information(self, 'PARAM.SFO saved', f'Original preserved as:\n{posixpath.join(folder, backup)}')
+                    self.refresh(tab)
+
+            if not self.run_session_job(tab, 'Saving PARAM.SFO with backup', save, saved):
+                QMessageBox.information(self, 'Connection busy', 'Wait for the current operation, then reopen the PARAM.SFO.')
+
+        self.run_session_job(tab, 'Opening PARAM.SFO', read, opened)
+
     def search_remote(self, tab):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.busy: return

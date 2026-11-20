@@ -21,3 +21,7 @@ On Windows, install Python 3.11 or later and run `start_windows.bat`. Use `pytho
 The release workflow builds a Windows installer when a matching version tag is pushed, then attaches it to a stable GitHub Release. Update the version in the app, installer, build script, and version assertions before tagging. The installer filename must match the tag (for example, `ZFTP_Setup_v2.1.8.exe` for `v2.1.8`).
 
 See the [v2.1.8 changelog](docs/changelog/CHANGELOG_v2.1.8.md), [release history](docs/RELEASE_HISTORY.md), and [security notes](docs/SECURITY.md).
+
+### View or edit PS3 PARAM.SFO files
+
+In the remote browser, open the game’s folder, right-click `PARAM.SFO`, and choose **View / edit PARAM.SFO**. You can check fields such as `TITLE`, `TITLE_ID`, and `CATEGORY` without saving. The editor supports UTF-8 text and unsigned integers in their existing field space and shows raw fields as read-only. **Save with backup** checks whether the file changed since opening and keeps the original in the same remote folder.

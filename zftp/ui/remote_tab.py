@@ -79,7 +79,7 @@ class RemoteTab(QWidget):
         self.download.setObjectName('primaryAction')
         self.copy_to_server = QPushButton('Copy to server…')
         self.rename_btn = QPushButton('Rename')
-        self.edit_btn = QPushButton('Edit text')
+        self.edit_btn = QPushButton('Edit text / SFO')
         self.search_btn = QPushButton('Search')
         self.permissions_btn = QPushButton('Permissions')
         self.disconnect = QPushButton('Disconnect')
