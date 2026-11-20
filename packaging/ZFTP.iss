@@ -1,5 +1,5 @@
 #define AppName "Z FTP"
-#define AppVersion "2.1.10"
+#define AppVersion "2.1.11"
 [Setup]
 AppId={{77CD47FA-45F5-467F-A93B-676F2DC0A635}
 AppName={#AppName}
@@ -9,7 +9,7 @@ DefaultDirName={localappdata}\Programs\ZFTP
 DefaultGroupName=Z FTP
 PrivilegesRequired=lowest
 OutputDir=..\installer_output
-OutputBaseFilename=ZFTP_Setup_v2.1.10
+OutputBaseFilename=ZFTP_Setup_v2.1.11
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

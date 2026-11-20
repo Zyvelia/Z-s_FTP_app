@@ -1,4 +1,4 @@
-"""Z FTP v2.1.10 — main window composition; UI behaviors live in dedicated modules."""
+"""Z FTP v2.1.11 — main window composition; UI behaviors live in dedicated modules."""
 from __future__ import annotations
 
 import sys
@@ -44,6 +44,7 @@ from zftp.services.sync_engine import (Inventory, Change, inventory_local, inven
 
 from zftp.ui.ui_workers import Job, Events
 from zftp.ui.remote_tab import RemoteTab
+from zftp.ui.help_dialog import HelpDialog
 from zftp.ui.tray_controls import TrayControlsMixin
 from zftp.ui.file_browser import FileBrowserMixin
 from zftp.ui.transfers_view import TransfersViewMixin
@@ -56,7 +57,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
                  WorkflowViewsMixin, ShutdownControlsMixin, ProfileControlsMixin, QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Z FTP  •  v2.1.10')
+        self.setWindowTitle('Z FTP  •  v2.1.11')
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[2] / 'assets' / 'zftp_icon.png')))
         self.resize(1500, 920)
         self.setMinimumSize(1040, 680)
@@ -179,6 +180,11 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.toggle_setup = QPushButton('Connection settings  ▴')
         self.toggle_setup.setToolTip('Collapse connection and saved-profile controls')
         header_layout.addWidget(self.toggle_setup)
+        self.help_button = QPushButton('Help')
+        self.help_button.setIcon(self.style().standardIcon(QStyle.SP_DialogHelpButton))
+        self.help_button.setToolTip('Open the Z FTP guide (F1)')
+        self.help_button.clicked.connect(self.show_help)
+        header_layout.addWidget(self.help_button)
         layout.addWidget(header)
         self.connection_setup = QFrame()
         setup_layout = QVBoxLayout(self.connection_setup)
@@ -265,7 +271,13 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.local_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         ll.setContentsMargins(6, 6, 6, 6)
         ll.setSpacing(5)
-        ll.addWidget(self.local_label); ll.addLayout(local_actions); ll.addWidget(self.local_table)
+        ll.addWidget(self.local_label)
+        ll.addLayout(local_actions)
+        destination_hint = QLabel('Use Download to choose a destination, or drop here to download into this folder.')
+        destination_hint.setObjectName('subTitle')
+        destination_hint.setWordWrap(True)
+        ll.addWidget(destination_hint)
+        ll.addWidget(self.local_table)
         remote = QFrame(); remote.setObjectName('browserCard'); rl = QVBoxLayout(remote)
         rl.setContentsMargins(6, 6, 6, 6)
         rl.setSpacing(4)
@@ -545,7 +557,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self._queue_redraw_throttle = UpdateThrottle()
         self._key_shortcuts = []
         self.set_local_path(self.local_path)
-        for keys, handler in (('F5', lambda: self.set_local_path(self.local_path)),
+        for keys, handler in (('F1', self.show_help),
+                              ('F5', lambda: self.set_local_path(self.local_path)),
                               ('Ctrl+L', self.focus_local_path),
                               ('Ctrl+R', self.refresh_current_remote)):
             shortcut = QShortcut(QKeySequence(keys), self)
@@ -557,6 +570,11 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.refresh_server_badge()
         self.update_active()
 
+    def show_help(self):
+        dialog = HelpDialog(self)
+        dialog.exec()
+        dialog.deleteLater()
+
     def download_active(self):
         tab = self.current_tab()
         if tab is not None:
@@ -566,7 +584,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         """Navigate without duplicating any transfer or hosting controller."""
         if section == 'about':
             QMessageBox.information(self, 'About Z FTP',
-                'Z FTP v2.1.10\nFTP, FTPS and SFTP clients and servers.\n'
+                'Z FTP v2.1.11\nFTP, FTPS and SFTP clients and servers.\n'
                 'Includes optional PS3/mmCM compatibility and performance settings.')
             return
         for key, button in self.sidebar_buttons.items():
