@@ -18,9 +18,9 @@ Finish your transfers and quit Z FTP, including its tray icon. Open **Z FTP - Ch
 
 On Windows, install Python 3.11 or later and run `start_windows.bat`. Use `python verify_release.py` for the regression suite. Run `build_exe.bat` to build the app or `build_all.bat` to build the app and installer with Inno Setup 6.
 
-The release workflow builds a Windows installer when a matching version tag is pushed, then attaches it to a stable GitHub Release. Update the version in the app, installer, build script, and version assertions before tagging. The installer filename must match the tag (for example, `ZFTP_Setup_v2.1.8.exe` for `v2.1.8`).
+The release workflow builds a Windows installer when a matching version tag is pushed, then attaches it to a stable GitHub Release. Update the version in the app, installer, build script, and version assertions before tagging. The installer filename must match the tag (for example, `ZFTP_Setup_v2.1.9.exe` for `v2.1.9`).
 
-See the [v2.1.8 changelog](docs/changelog/CHANGELOG_v2.1.8.md), [release history](docs/RELEASE_HISTORY.md), and [security notes](docs/SECURITY.md).
+See the [v2.1.9 changelog](docs/changelog/CHANGELOG_v2.1.9.md), [release history](docs/RELEASE_HISTORY.md), and [security notes](docs/SECURITY.md).
 
 ### View or edit PS3 PARAM.SFO files
 

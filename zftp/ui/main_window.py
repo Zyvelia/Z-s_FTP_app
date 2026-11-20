@@ -1,4 +1,4 @@
-"""Z FTP v2.1.8 — main window composition; UI behaviors live in dedicated modules."""
+"""Z FTP v2.1.9 — main window composition; UI behaviors live in dedicated modules."""
 from __future__ import annotations
 
 import sys
@@ -56,7 +56,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
                  WorkflowViewsMixin, ShutdownControlsMixin, ProfileControlsMixin, QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Z FTP  •  v2.1.8')
+        self.setWindowTitle('Z FTP  •  v2.1.9')
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[2] / 'assets' / 'zftp_icon.png')))
         self.resize(1500, 920)
         self.setMinimumSize(1040, 680)
@@ -566,7 +566,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         """Navigate without duplicating any transfer or hosting controller."""
         if section == 'about':
             QMessageBox.information(self, 'About Z FTP',
-                'Z FTP v2.1.8\nFTP, FTPS and SFTP clients and servers.\n'
+                'Z FTP v2.1.9\nFTP, FTPS and SFTP clients and servers.\n'
                 'Includes optional PS3/mmCM compatibility and performance settings.')
             return
         for key, button in self.sidebar_buttons.items():
