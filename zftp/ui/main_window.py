@@ -5,6 +5,7 @@ import sys
 import os
 import time
 import posixpath
+from datetime import datetime
 from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor
@@ -30,13 +31,10 @@ from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
-from zftp.ui.notifications import NotificationHistory
 from zftp.transfers.integrity import verify_transfer
 from zftp.services.transfer_history import TransferHistory
-from zftp.services.scheduler import ScheduleStore
 from zftp.services.workflows import WorkflowStore
 from zftp.ui.workflow_dialog import WorkflowDialog
-from zftp.transfers.cross_server import copy_file
 from zftp.ui.ui_theme import APP_STYLESHEET, status_label
 from zftp.services.sync_engine import (Inventory, Change, inventory_local, inventory_remote, plan,
                          safe_local_target, relpath, unique_name)
@@ -61,11 +59,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[2] / 'assets' / 'zftp_icon.png')))
         self.resize(1500, 920)
         self.setMinimumSize(1040, 680)
-        self.notices = NotificationHistory()
         self.history = TransferHistory()
-        self.schedules = ScheduleStore()
         self.workflows = WorkflowStore()
-        self.cross_operations = []
         self.workflow_running = set()
         self.tray = None
         self._tray_force_quit = False
@@ -115,9 +110,6 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         side.addWidget(sidebar_brand)
         side.addSpacing(16)
         self.sidebar_buttons = {}
-        # Keep the sidebar focused on the pages that benefit most from persistent
-        # navigation. Secondary tools such as schedules, workflows and sync stay
-        # available in the bottom panel instead of permanently consuming sidebar space.
         for key, label in (
             ('connection', 'Connection'),
             ('browser', 'File Browser'),
@@ -133,9 +125,6 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
                 'connection': QStyle.SP_DriveNetIcon,
                 'browser': QStyle.SP_DirIcon,
                 'transfers': QStyle.SP_ArrowUp,
-                'sync': QStyle.SP_BrowserReload,
-                'schedules': QStyle.SP_FileDialogDetailedView,
-                'workflows': QStyle.SP_FileDialogListView,
                 'ftp_server': QStyle.SP_DriveNetIcon,
                 'sftp_server': QStyle.SP_DriveNetIcon,
                 'settings': QStyle.SP_FileDialogContentsView,
@@ -150,9 +139,9 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             self.sidebar_buttons[key] = button
             button.clicked.connect(lambda _=False, section=key: self.navigate_sidebar(section))
             if key == 'settings':
-                button.setToolTip('Transfer settings, activity, schedules, workflows and sync preview live in the lower panel.')
+                button.setToolTip('Open transfer settings')
         side.addStretch(1)
-        side_info = QLabel('SECURE FILE TRANSFER\nLower panel: Sync · Schedules · Workflows')
+        side_info = QLabel('SECURE FILE TRANSFER\nClient · FTP/FTPS · SFTP')
         side_info.setObjectName('sidebarFooter')
         side.addWidget(side_info)
         shell.addWidget(sidebar)
@@ -329,10 +318,15 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         queue_label.setObjectName('sectionHeading')
         queue_header.addWidget(queue_label)
         self.activity_toggle = QToolButton()
-        self.activity_toggle.setText('Activity ▸')
+        self.activity_toggle.setText('Activity…')
         self.activity_toggle.setCheckable(True)
-        self.activity_toggle.setToolTip('Expand activity, history, schedules and workflows')
+        self.activity_toggle.setToolTip('Open session activity, transfer history and workflows')
         queue_header.addWidget(self.activity_toggle)
+        self.history_button = QToolButton()
+        self.history_button.setText('History')
+        self.history_button.setToolTip('Open saved transfer history')
+        self.history_button.clicked.connect(self.show_history)
+        queue_header.addWidget(self.history_button)
         self.cancel_job_button = QPushButton('Cancel selected job')
         self.clear_jobs_button = QPushButton('Clear finished')
         queue_header.addStretch(1)
@@ -420,17 +414,22 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         advanced.addWidget(self.verify_checksums)
         self.cancel_job_button.clicked.connect(self.cancel_selected_job)
         self.clear_jobs_button.clicked.connect(self.clear_finished_jobs)
-        self.logs = QTextEdit(); self.logs.setReadOnly(True); self.logs.setMaximumHeight(115)
-        self.logs.setPlaceholderText('Session activity will appear here…')
-        self.bottom_tabs = QTabWidget(); self.bottom_tabs.setMaximumHeight(260)
+        self.logs = QPlainTextEdit()
+        self.logs.setReadOnly(True)
+        self.logs.setMaximumBlockCount(500)
+        self.logs.setPlaceholderText('Connection events, transfers and alerts will appear here.')
+        self.transfer_details = QDialog(self)
+        self.transfer_details.setWindowTitle('Transfer activity')
+        self.transfer_details.resize(840, 440)
+        details_layout = QVBoxLayout(self.transfer_details)
+        self.bottom_tabs = QTabWidget()
+        details_layout.addWidget(self.bottom_tabs)
         self.bottom_tabs.addTab(self.logs, 'Activity')
-        self.notifications_view = QListWidget()
-        self.notifications_view.setToolTip('Recent connection and transfer notifications for this session')
-        self.bottom_tabs.addTab(self.notifications_view, 'Notifications')
         self.history_panel = QWidget()
         history_layout = QVBoxLayout(self.history_panel)
         history_toolbar = QHBoxLayout()
-        history_toolbar.addWidget(QLabel('Recent transfer outcomes (stored locally)'))
+        self.history_summary = QLabel()
+        history_toolbar.addWidget(self.history_summary)
         self.history_refresh = QPushButton('Refresh')
         self.history_export = QPushButton('Export CSV')
         history_toolbar.addStretch(1)
@@ -439,77 +438,65 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         history_layout.addLayout(history_toolbar)
         self.history_table = QTableWidget(0, 5)
         self.history_table.setHorizontalHeaderLabels(['Time (UTC)', 'Server', 'File', 'Status', 'SHA-256'])
-        self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        history_header = self.history_table.horizontalHeader()
+        history_header.setSectionResizeMode(2, QHeaderView.Stretch)
+        self.history_table.setColumnWidth(0, 180)
+        self.history_table.setColumnWidth(4, 150)
+        self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.history_table.setAlternatingRowColors(True)
+        self.history_table.verticalHeader().hide()
         history_layout.addWidget(self.history_table)
         self.bottom_tabs.addTab(self.history_panel, 'History')
         self.history_refresh.clicked.connect(self.refresh_history)
         self.history_export.clicked.connect(self.export_history)
-        self.schedules_panel = QWidget()
-        sched_layout = QVBoxLayout(self.schedules_panel)
-        sched_toolbar = QHBoxLayout()
-        self.schedule_add = QPushButton('Add schedule')
-        self.schedule_toggle = QPushButton('Pause / enable')
-        self.schedule_remove = QPushButton('Remove')
-        self.schedule_refresh = QPushButton('Refresh')
-        for button in (self.schedule_add, self.schedule_toggle, self.schedule_remove, self.schedule_refresh):
-            sched_toolbar.addWidget(button)
-        sched_toolbar.addStretch(1)
-        sched_layout.addLayout(sched_toolbar)
-        self.schedules_table = QTableWidget(0, 5)
-        self.schedules_table.setHorizontalHeaderLabels(['Task', 'Action', 'Next (local)', 'Repeat', 'State'])
-        self.schedules_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        sched_layout.addWidget(self.schedules_table)
-        self.bottom_tabs.addTab(self.schedules_panel, 'Schedules')
         self.workflows_panel = QWidget()
         wf_layout = QVBoxLayout(self.workflows_panel)
-        wf_toolbar = QGridLayout()
-        wf_toolbar.setHorizontalSpacing(6)
-        wf_toolbar.setVerticalSpacing(4)
-        self.workflow_create = QPushButton('Create workflow…')
-        self.workflow_edit = QPushButton('Edit steps…')
-        self.workflow_duplicate = QPushButton('Duplicate')
-        self.workflow_run = QPushButton('Run / continue')
-        self.workflow_pause = QPushButton('Pause')
-        self.workflow_remove = QPushButton('Delete')
-        self.workflow_refresh = QPushButton('Refresh')
-        for i, button in enumerate((self.workflow_create, self.workflow_edit, self.workflow_duplicate,
-                                    self.workflow_run, self.workflow_pause, self.workflow_remove,
-                                    self.workflow_refresh)):
-            wf_toolbar.addWidget(button, i // 4, i % 4)
+        wf_toolbar = QHBoxLayout()
+        self.workflow_create = QPushButton('New workflow…')
+        self.workflow_create.setObjectName('primaryAction')
+        self.workflow_edit = QPushButton('Edit…')
+        self.workflow_run = QPushButton('Run')
+        self.workflow_pause = QPushButton('Pause after step')
+        self.workflow_more = QToolButton()
+        self.workflow_more.setText('More')
+        self.workflow_more.setPopupMode(QToolButton.InstantPopup)
+        workflow_menu = QMenu(self.workflow_more)
+        self.workflow_duplicate = workflow_menu.addAction('Duplicate', self.duplicate_selected_workflow)
+        self.workflow_remove = workflow_menu.addAction('Delete…', self.remove_selected_workflow)
+        self.workflow_more.setMenu(workflow_menu)
+        for button in (self.workflow_create, self.workflow_run, self.workflow_pause,
+                       self.workflow_edit, self.workflow_more):
+            wf_toolbar.addWidget(button)
+        wf_toolbar.addStretch(1)
         wf_layout.addLayout(wf_toolbar)
-        self.workflow_table = QTableWidget(0, 4)
-        self.workflow_table.setHorizontalHeaderLabels(['Workflow', 'Steps done', 'State', 'Last error'])
+        self.workflow_table = QTableWidget(0, 3)
+        self.workflow_table.setHorizontalHeaderLabels(['Workflow', 'Progress', 'Status'])
         self.workflow_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.workflow_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.workflow_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.workflow_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.workflow_table.setAlternatingRowColors(True)
+        self.workflow_table.verticalHeader().hide()
         wf_layout.addWidget(self.workflow_table)
+        self.workflow_summary = QLabel()
+        self.workflow_summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.workflow_summary.setTextFormat(Qt.PlainText)
+        self.workflow_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        wf_layout.addWidget(self.workflow_summary)
         self.bottom_tabs.addTab(self.workflows_panel, 'Workflows')
-        self.cross_panel = QWidget()
-        cross_layout = QVBoxLayout(self.cross_panel)
-        cross_layout.addWidget(QLabel('Remote-to-remote copies · both servers must remain connected'))
-        self.cross_table = QTableWidget(0, 5)
-        self.cross_table.setHorizontalHeaderLabels(['Source', 'Destination', 'Status', 'Bytes', 'Error'])
-        self.cross_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        cross_layout.addWidget(self.cross_table)
-        self.bottom_tabs.addTab(self.cross_panel, 'Cross-server')
+        self.workflow_rows = []
         self.workflow_create.clicked.connect(self.create_workflow)
         self.workflow_edit.clicked.connect(self.edit_selected_workflow)
-        self.workflow_duplicate.clicked.connect(self.duplicate_selected_workflow)
         self.workflow_run.clicked.connect(self.run_selected_workflow)
         self.workflow_pause.clicked.connect(self.pause_selected_workflow)
-        self.workflow_remove.clicked.connect(self.remove_selected_workflow)
-        self.workflow_refresh.clicked.connect(self.refresh_workflows)
+        self.workflow_table.itemSelectionChanged.connect(self.update_workflow_actions)
+        self.workflow_table.cellDoubleClicked.connect(
+            lambda *_: self.edit_selected_workflow() if self.workflow_edit.isEnabled() else None)
+        self.bottom_tabs.currentChanged.connect(self.refresh_history_if_visible)
 
-        self.schedule_add.clicked.connect(self.add_schedule)
-        self.schedule_toggle.clicked.connect(self.toggle_schedule)
-        self.schedule_remove.clicked.connect(self.remove_schedule)
-        self.schedule_refresh.clicked.connect(self.refresh_schedules)
-
-        # Activity/history/workflow controls remain available, but do not
-        # steal vertical space from file browsing until explicitly expanded.
-        self.bottom_tabs.setVisible(False)
-        self.activity_toggle.toggled.connect(self.bottom_tabs.setVisible)
-        self.activity_toggle.toggled.connect(
-            lambda shown: self.activity_toggle.setText('Activity ▾' if shown else 'Activity ▸'))
-        transfer_layout.addWidget(self.bottom_tabs)
+        self.activity_toggle.toggled.connect(self.set_transfer_details_visible)
+        self.transfer_details.finished.connect(lambda _: self.activity_toggle.setChecked(False))
         layout.addWidget(self.transfer_card, 2)
         self.notifications_enabled = QCheckBox('Desktop notifications')
         self.notifications_enabled.setChecked(True)
@@ -530,11 +517,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.server_status_timer = QTimer(self)
         self.server_status_timer.timeout.connect(self.refresh_server_badge)
         self.server_status_timer.start(1000)
-        self.schedule_timer = QTimer(self)
-        self.schedule_timer.timeout.connect(self.tick_schedules)
-        self.schedule_timer.start(15000)
         self.refresh_history()
-        self.refresh_schedules()
         self.refresh_workflows()
         self.connect_button.clicked.connect(self.connect_new)
         self.protocol_select.currentTextChanged.connect(self.protocol_changed)
@@ -607,9 +590,6 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             self.queue_table.setFocus()
         elif section == 'sync':
             self.preview_sync()
-        elif section in ('schedules', 'workflows'):
-            self.activity_toggle.setChecked(True)
-            self.bottom_tabs.setCurrentWidget(self.schedules_panel if section == 'schedules' else self.workflows_panel)
         elif section == 'settings':
             self.transfer_options_toggle.setChecked(True)
             self.bandwidth_limit.setFocus()
@@ -635,15 +615,14 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
 
 
     def notify(self, level, title, message):
-        notice = self.notices.add(level, title, message)
-        self.notifications_view.insertItem(0, f'{title}: {notice.message}')
-        while self.notifications_view.count() > self.notices.capacity:
-            self.notifications_view.takeItem(self.notifications_view.count() - 1)
-        self.statusBar().showMessage(f'{title} · {notice.message[:150]}', 8000)
+        title = str(title)[:140]
+        message = str(message)[:1000]
+        self.log(f'{title} · {message}')
+        self.statusBar().showMessage(f'{title} · {message[:150]}', 8000)
         if self.tray is not None and self.notifications_enabled.isChecked():
             icon = {'error': QSystemTrayIcon.Critical, 'warning': QSystemTrayIcon.Warning}.get(level, QSystemTrayIcon.Information)
             if QSystemTrayIcon.supportsMessages():
-                self.tray.showMessage(title, notice.message, icon, 4000)
+                self.tray.showMessage(title, message, icon, 4000)
 
 
     @staticmethod
@@ -663,7 +642,9 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             table.setItem(row, col, QTableWidgetItem(str(value)))
 
     def log(self, message):
-        self.logs.append(message)
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        line = ' '.join(str(message).splitlines())
+        self.logs.appendPlainText(f'{timestamp}  {line}')
 
     def current_tab(self):
         widget = self.tabs.currentWidget()

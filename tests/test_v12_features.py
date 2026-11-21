@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from zftp.transfers.integrity import local_sha256, remote_sha256, verify_transfer, IntegrityMismatch
-from zftp.services.scheduler import ScheduleStore
 from zftp.services.transfer_history import TransferHistory
 from zftp.transfers.transfer_queue import Transfer
 
@@ -91,52 +90,5 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(store.recent()[0]['status'], 'Failed')
             with self.assertRaises(ValueError): store.recent(0)
 
-class SchedulingTests(unittest.TestCase):
-    def endpoint(self): return ScheduleStore.endpoint('SFTP', 'example.org', 22, 'user')
-
-    def test_due_claim_complete_repeat(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / 's.sqlite'
-            s = ScheduleStore(db)
-            sid = s.add('Upload', 'upload', self.endpoint(), 'x', '/x', 100, 120)
-            self.assertFalse(s.due(99))
-            self.assertEqual(len(s.due(100)), 1)
-            self.assertTrue(s.claim(sid, 100))
-            self.assertFalse(s.claim(sid, 100))
-            self.assertTrue(s.finish(sid, True, now=110))
-            self.assertFalse(s.due(200))
-            self.assertEqual(len(s.due(230)), 1)
-            self.assertEqual(ScheduleStore(db).all()[0]['state'], 'enabled')
-
-    def test_failure_pauses_and_resume(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            s = ScheduleStore(Path(tmp) / 'sched.db')
-            sid = s.add('D', 'download', self.endpoint(), 'local', '/remote', 10)
-            self.assertTrue(s.claim(sid, 10))
-            s.finish(sid, False, 'destination exists', now=10)
-            self.assertFalse(s.due(20))
-            self.assertEqual(s.all()[0]['state'], 'paused')
-            self.assertTrue(s.set_enabled(sid, True))
-            self.assertTrue(s.due(20))
-            self.assertTrue(s.delete(sid))
-            self.assertEqual(s.all(), [])
-
-    def test_interrupted_dispatch_does_not_replay(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / 'sched.db'
-            s = ScheduleStore(db)
-            sid = s.add('Sync', 'sync_two_way', self.endpoint(), '/local', '/remote', 10)
-            self.assertTrue(s.claim(sid, 10))
-            after = ScheduleStore(db)
-            self.assertEqual(after.all()[0]['state'], 'paused')
-            self.assertIn('Interrupted dispatch', after.all()[0]['last_error'])
-            self.assertFalse(after.due(20))
-
-    def test_invalid_actions_and_intervals(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            s = ScheduleStore(Path(tmp) / 'db')
-            for action, repeat in [('invalid', 0), ('upload', 59)]:
-                with self.assertRaises(ValueError):
-                    s.add('test', action, self.endpoint(), 'file', '/file', 100, repeat)
 
 if __name__ == '__main__': unittest.main()

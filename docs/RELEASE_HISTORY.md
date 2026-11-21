@@ -219,7 +219,6 @@ The GUI sizing needs a Windows visual check because PySide6 is not installed in 
 - `assets/zftp_icon.ico`: branded Windows EXE, shortcuts, installer, and taskbar icon.
 - `assets/zftp_icon.png`: Qt window/application icon.
 - `assets/installer_sidebar.bmp`, `assets/installer_small.bmp`: custom Inno Setup wizard graphics.
-- `assets/design_concept.png`: optional UI *concept image*; not implemented as a replacement interface.
 - `build_exe.bat`: creates `dist/ZFTP/ZFTP.exe` and bundled dependencies (requires Windows and Python).
 - `build_installer.bat`: creates `installer_output/ZFTP_Setup_v2.1.6.exe` (requires Inno Setup 6).
 - `build_all.bat`: runs the EXE builder and then the installer builder.

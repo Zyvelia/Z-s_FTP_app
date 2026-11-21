@@ -30,13 +30,10 @@ from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
-from zftp.ui.notifications import NotificationHistory
 from zftp.transfers.integrity import verify_transfer
 from zftp.services.transfer_history import TransferHistory
-from zftp.services.scheduler import ScheduleStore
 from zftp.services.workflows import WorkflowStore
 from zftp.ui.workflow_dialog import WorkflowDialog
-from zftp.transfers.cross_server import copy_file
 from zftp.ui.ui_theme import APP_STYLESHEET, status_label
 from zftp.services.sync_engine import (Inventory, Change, inventory_local, inventory_remote, plan,
                          safe_local_target, relpath, unique_name)
@@ -77,7 +74,6 @@ class ShutdownControlsMixin:
             self.update_active()
             if error: self.log(f'Failed to cleanly disconnect {state.host}: {error}')
             else:
-                self.log(f'Disconnected {state.host}')
                 self.notify('info', 'Disconnected', state.host)
         job.events.done.connect(lambda _: finish())
         job.events.failed.connect(finish)

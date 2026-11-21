@@ -30,13 +30,10 @@ from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
-from zftp.ui.notifications import NotificationHistory
 from zftp.transfers.integrity import verify_transfer
 from zftp.services.transfer_history import TransferHistory
-from zftp.services.scheduler import ScheduleStore
 from zftp.services.workflows import WorkflowStore
 from zftp.ui.workflow_dialog import WorkflowDialog
-from zftp.transfers.cross_server import copy_file
 from zftp.ui.ui_theme import APP_STYLESHEET, status_label
 from zftp.services.sync_engine import (Inventory, Change, inventory_local, inventory_remote, plan,
                          safe_local_target, relpath, unique_name)
@@ -173,7 +170,7 @@ class TransfersViewMixin:
         if dialog.exec() != QDialog.Accepted: return
         policy = 'keep_both' if conflict_option.currentIndex() == 1 else 'skip'
         self.enqueue_changes(tab, changes, remote_root, local_root, policy, folder_batch=folder_batch)
-    def enqueue_changes(self, tab, changes, remote_root, local_root, policy='skip', *, silent=False, folder_batch=None):
+    def enqueue_changes(self, tab, changes, remote_root, local_root, policy='skip', *, folder_batch=None):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.closing: return
         sid = str(id(tab)); local_root = Path(local_root)
@@ -236,8 +233,7 @@ class TransfersViewMixin:
             QMessageBox.information(self, 'Nothing queued', 'No new files or folders to download under the selected policy.')
         self.render_queue()
         if accepted: self.log(f'Queued {accepted} recursive/sync operations for {state.host}')
-        if rejected and not silent: QMessageBox.warning(self, 'Some entries were skipped', '\n'.join(rejected[:15]))
-        if rejected and silent: self.log('Scheduled sync rejected paths: ' + '; '.join(rejected[:6]))
+        if rejected: QMessageBox.warning(self, 'Some entries were skipped', '\n'.join(rejected[:15]))
         self.pump_queue(tab)
         return accepted, rejected
     def enqueue_uploads(self, tab, paths):
@@ -585,7 +581,6 @@ class TransfersViewMixin:
         def on_error(exc):
             self.queue.finish(item, exc)
             self.record_transfer(item, state)
-            self.notify('error', 'Transfer failed', f'{item.name}: {exc}')
             self.render_queue()
             # Interrupted transfer can leave FTP/SFTP channel state uncertain.
             # Stop only this session's pending jobs and close it after the worker ends.

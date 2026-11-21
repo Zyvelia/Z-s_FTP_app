@@ -19,6 +19,6 @@ class ShutdownAndLayoutTests(unittest.TestCase):
         self.assertIn('self.server_panel.active_or_stopping or self.sftp_server_panel.active_or_stopping', self.code)
     def test_compact_settings_grid(self):
         self.assertIn('options = QGridLayout()', self.code)
-        self.assertIn('wf_toolbar = QGridLayout()', self.code)
+        self.assertIn('wf_toolbar = QHBoxLayout()', self.code)
         self.assertIn('self.verify_checksums = QCheckBox(', self.code)
 if __name__ == '__main__': unittest.main()

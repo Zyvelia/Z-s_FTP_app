@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 def check_layout():
     required = ('main.py', 'zftp/ui/main_window.py', 'zftp/protocols/ftp_engine.py', 'zftp/protocols/sftp_engine.py', 'zftp/servers/server_core.py',
                 'zftp/servers/sftp_server_core.py', 'zftp/transfers/reliable_transfer.py', 'zftp/transfers/cross_server.py',
-                'zftp/services/workflows.py', 'zftp/services/scheduler.py', 'zftp/services/transfer_history.py',
+                'zftp/services/workflows.py', 'zftp/services/transfer_history.py',
                 'optional_zmt_adapter/launcher.py', 'build_exe.bat',
                 'build_installer.bat', 'packaging/ZFTP.iss', 'requirements.txt')
     missing = [item for item in required if not (ROOT/item).is_file()]

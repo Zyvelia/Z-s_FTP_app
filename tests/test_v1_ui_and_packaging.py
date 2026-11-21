@@ -6,29 +6,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from zftp.ui.notifications import NotificationHistory
 from zftp.ui.ui_theme import APP_STYLESHEET, status_label
 
 
-class NotificationTests(unittest.TestCase):
-    def test_notice_is_bounded_and_ordered(self):
-        history = NotificationHistory(2)
-        history.add('success', 'First', '1')
-        history.add('warning', 'Second', '2')
-        history.add('error', 'Third', '3')
-        self.assertEqual([n.title for n in history.items], ['Second', 'Third'])
-
-    def test_notice_sanitizes_lengths(self):
-        note = NotificationHistory().add('info', 'x' * 500, 'y' * 2000)
-        self.assertEqual(len(note.title), 140)
-        self.assertEqual(len(note.message), 1000)
-        self.assertTrue(note.timestamp.endswith('+00:00'))
-
-    def test_invalid_level_and_capacity_rejected(self):
-        with self.assertRaises(ValueError): NotificationHistory(0)
-        with self.assertRaises(ValueError): NotificationHistory(10001)
-        with self.assertRaises(ValueError): NotificationHistory().add('critical', 'x', 'y')
-
+class ThemeTests(unittest.TestCase):
     def test_status_counts(self):
         self.assertEqual(status_label(0), '0 connected')
         self.assertEqual(status_label(3, 2), '3 connected · 2 transferring')

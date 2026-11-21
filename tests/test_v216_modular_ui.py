@@ -9,7 +9,7 @@ EXTRACTED = {
     "tray_controls": ("TrayControlsMixin", "setup_tray_controls", "quit_from_tray"),
     "file_browser": ("FileBrowserMixin", "set_local_path", "run_session_job", "remote_context_menu"),
     "transfers_view": ("TransfersViewMixin", "render_queue", "pump_queue", "on_transfer_progress"),
-    "workflow_views": ("WorkflowViewsMixin", "refresh_workflows", "tick_schedules", "copy_to_server"),
+    "workflow_views": ("WorkflowViewsMixin", "refresh_workflows", "start_workflow_step", "refresh_history"),
     "shutdown_controls": ("ShutdownControlsMixin", "closeEvent", "_advance_shutdown"),
     "profile_controls": ("ProfileControlsMixin", "refresh_profiles", "manage_profiles"),
 }

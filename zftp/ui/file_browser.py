@@ -31,13 +31,10 @@ from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
-from zftp.ui.notifications import NotificationHistory
 from zftp.transfers.integrity import verify_transfer
 from zftp.services.transfer_history import TransferHistory
-from zftp.services.scheduler import ScheduleStore
 from zftp.services.workflows import WorkflowStore
 from zftp.ui.workflow_dialog import WorkflowDialog
-from zftp.transfers.cross_server import copy_file
 from zftp.ui.ui_theme import APP_STYLESHEET, status_label
 from zftp.services.sync_engine import (Inventory, Change, inventory_local, inventory_remote, plan,
                          safe_local_target, relpath, unique_name)
@@ -269,7 +266,6 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         tab.search_btn.clicked.connect(lambda: self.search_remote(tab))
         tab.permissions_btn.clicked.connect(lambda: self.permissions_remote(tab))
         tab.download.clicked.connect(lambda: self.download(tab))
-        tab.copy_to_server.clicked.connect(lambda: self.copy_to_server(tab))
         tab.disconnect.clicked.connect(lambda: self.close_tab(tab))
         tab.cancel.clicked.connect(lambda: setattr(state, 'cancelled', True))
         tab.table.cellDoubleClicked.connect(lambda row, col: self.open_remote(tab, row))
@@ -294,7 +290,6 @@ class FileBrowserMixin(Ps3FileToolsMixin):
             tab.show_entries()
             if self.connection_setup.isVisible():
                 self.toggle_connection_setup()
-            self.log(f'Connected: {protocol}://{host}:{port}')
             self.notify('success', 'Connected', f'{protocol} · {host}:{port}')
         def on_error(exc):
             if isinstance(exc, UntrustedHostKey):
@@ -349,7 +344,6 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         def failed(exc):
             finish()
             tab.status.setText('Failed: ' + str(exc))
-            self.log(f'{state.host}: {label} — {exc}')
             self.notify('error', 'Operation failed', f'{state.host} · {label}: {exc}')
             if on_error and on_error(exc): return
             QMessageBox.warning(self, 'Z FTP operation failed', str(exc))
