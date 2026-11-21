@@ -1,6 +1,7 @@
 """FileBrowserMixin: isolated Z FTP UI behavior, attached to the same main window."""
 from __future__ import annotations
 
+import ftplib
 import hashlib
 import sys
 import os
@@ -259,6 +260,7 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         tab.back.clicked.connect(lambda: self.navigate_history(tab, -1))
         tab.forward.clicked.connect(lambda: self.navigate_history(tab, 1))
         tab.refresh.clicked.connect(lambda: self.refresh(tab))
+        tab.go_to_folder.clicked.connect(lambda: self.prompt_remote_folder(tab))
         tab.mkdir.clicked.connect(lambda: self.mkdir(tab))
         tab.delete.clicked.connect(lambda: self.delete(tab))
         tab.rename_btn.clicked.connect(lambda: self.rename_remote(tab))
@@ -346,7 +348,18 @@ class FileBrowserMixin(Ps3FileToolsMixin):
             tab.status.setText('Failed: ' + str(exc))
             self.notify('error', 'Operation failed', f'{state.host} · {label}: {exc}')
             if on_error and on_error(exc): return
-            QMessageBox.warning(self, 'Z FTP operation failed', str(exc))
+            if isinstance(exc, ftplib.error_perm) and str(exc).startswith('550'):
+                message = QMessageBox(self)
+                message.setIcon(QMessageBox.Warning)
+                message.setWindowTitle('FTP server refused the operation')
+                message.setTextFormat(Qt.PlainText)
+                message.setText(label)
+                message.setInformativeText(
+                    f'{exc}\n\nCheck that the remote path exists and that the FTP account can access it.')
+                message.setStandardButtons(QMessageBox.Ok)
+                message.exec()
+            else:
+                QMessageBox.warning(self, 'Z FTP operation failed', str(exc))
             # Interrupted data connections can invalidate the protocol session.
             if transfer:
                 self.close_tab(tab)
@@ -366,17 +379,38 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         if not (0 <= index < len(tab.nav_history)):
             return
         self.navigate(tab, tab.nav_history[index], history_index=index)
+    def prompt_remote_folder(self, tab):
+        state = self.sessions.get(tab)
+        if not state or not state.connected or state.busy or state.closing:
+            return
+        path, ok = QInputDialog.getText(self, 'Go to remote folder', 'Absolute remote path',
+                                        text=state.remote_path)
+        if not ok:
+            return
+        if not path.startswith('/') or any(char in path for char in '\r\n\0'):
+            QMessageBox.warning(self, 'Invalid remote path', 'Enter a path beginning with /.')
+            return
+        self.navigate(tab, path)
+
     def navigate(self, tab, path, *, history_index=None):
         state = self.sessions.get(tab)
         if not state or not state.connected: return
+        previous_path = state.remote_path
         def operation(_):
-            state.backend.cwd(path)
-            remote_path = state.backend.pwd()
-            cached = tab.directory_cache.get(remote_path)
-            if cached is not None:
-                return remote_path, cached, True
-            entries = state.backend.list_dir()
-            return remote_path, entries, False
+            try:
+                state.backend.cwd(path)
+                remote_path = state.backend.pwd()
+                cached = tab.directory_cache.get(remote_path)
+                if cached is not None:
+                    return remote_path, cached, True
+                return remote_path, state.backend.list_dir(), False
+            except Exception:
+                # CWD can succeed even when the server refuses to list the folder.
+                try:
+                    state.backend.cwd(previous_path)
+                except Exception:
+                    state.connected = False
+                raise
         def after(result):
             state.remote_path, state.entries, from_cache = result
             if not from_cache: tab.directory_cache.put(state.remote_path, state.entries)
@@ -387,7 +421,8 @@ class FileBrowserMixin(Ps3FileToolsMixin):
                 tab.nav_index = len(tab.nav_history) - 1
             tab.show_entries()
             tab.status.setText('Ready · cached listing' if from_cache else 'Ready')
-        self.run_session_job(tab, 'Opening remote folder', operation, after)
+        display_path = path if path.startswith('/') else posixpath.join(previous_path, path)
+        self.run_session_job(tab, f'Opening remote folder {display_path}', operation, after)
     def refresh(self, tab):
         state = self.sessions.get(tab)
         if not state or not state.connected: return
@@ -396,7 +431,7 @@ class FileBrowserMixin(Ps3FileToolsMixin):
             tab.directory_cache.put(state.remote_path, entries)
             tab.show_entries()
         tab.directory_cache.invalidate(state.remote_path)
-        self.run_session_job(tab, 'Refreshing folder', lambda _: state.backend.list_dir(), after)
+        self.run_session_job(tab, f'Refreshing folder {state.remote_path}', lambda _: state.backend.list_dir(), after)
     def mkdir(self, tab):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.busy: return

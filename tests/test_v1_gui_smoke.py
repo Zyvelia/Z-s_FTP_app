@@ -1,15 +1,19 @@
 """Optional Qt offscreen smoke checks; skipped when PySide6 unavailable."""
+import ftplib
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
     from PySide6.QtWidgets import QApplication
     from zftp.ui.main_window import MainWindow
+    from zftp.services.sessions import ConnectionSession
+    from zftp.ui.remote_tab import RemoteTab
     from zftp.services.transfer_history import TransferHistory
     from zftp.services.workflows import WorkflowStore
     from zftp.transfers.transfer_queue import Transfer
@@ -72,6 +76,33 @@ class GUIv1SmokeTests(unittest.TestCase):
             self.assertEqual(window.history_table.rowCount(), 1)
             self.assertEqual(window.history_table.item(0, 2).text(), 'report.txt')
             self.assertTrue(window.history_export.isEnabled())
+
+    def test_refused_folder_listing_restores_current_directory(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        backend = Mock()
+        backend.pwd.return_value = '/usb'
+        backend.list_dir.side_effect = ftplib.error_perm('550 File unavailable')
+        state = ConnectionSession(backend, 'FTP', 'localhost', 21, 'test',
+                                  remote_path='/', connected=True)
+        tab = RemoteTab(state, window)
+        window.sessions[tab] = state
+        self.addCleanup(window.sessions.clear)
+
+        with patch.object(window, 'run_session_job') as run:
+            window.navigate(tab, 'usb')
+        _, label, operation, *_ = run.call_args.args
+        self.assertIn('/usb', label)
+        with self.assertRaisesRegex(ftplib.error_perm, '550'):
+            operation(None)
+        self.assertEqual([call.args for call in backend.cwd.call_args_list], [('usb',), ('/',)])
+        self.assertEqual(state.remote_path, '/')
+        self.assertTrue(state.connected)
+
+        backend.cwd.side_effect = [None, ftplib.error_perm('550 Previous folder gone')]
+        with self.assertRaisesRegex(ftplib.error_perm, '550 File unavailable'):
+            operation(None)
+        self.assertFalse(state.connected)
 
     def test_workflow_actions_follow_selection_and_state(self):
         with tempfile.TemporaryDirectory() as directory:
