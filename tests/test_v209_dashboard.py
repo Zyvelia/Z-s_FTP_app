@@ -11,7 +11,7 @@ CSS = (ROOT / 'zftp/ui/ui_theme.py').read_text(encoding='utf-8')
 class DashboardTests(unittest.TestCase):
     def test_sidebar_controls_reach_existing_views(self):
         for text in ('appSidebar', 'navigate_sidebar', 'ftp_server', 'sftp_server',
-                     'schedules', 'workflows', 'browser', 'transfers', 'settings'):
+                     'browser', 'transfers', 'settings'):
             self.assertIn(text, MAIN)
         self.assertIn('self.main_sections.setCurrentIndex(0)', MAIN)
         self.assertIn('self.main_sections.tabBar().setVisible(index != 0)', MAIN)

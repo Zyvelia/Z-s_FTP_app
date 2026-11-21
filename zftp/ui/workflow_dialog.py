@@ -2,7 +2,7 @@
 from __future__ import annotations
 from copy import deepcopy
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QComboBox, QPushButton, QMessageBox, QListWidget, QFormLayout, QWidget)
+    QComboBox, QPushButton, QMessageBox, QListWidget, QFormLayout, QGroupBox)
 from zftp.services.workflows import _validate_step
 
 
@@ -14,32 +14,50 @@ def format_endpoint(endpoint):
 def format_step(step):
     source = format_endpoint(step['source_endpoint'])
     target = format_endpoint(step['destination_endpoint'])
-    return f"{step['source_name']}  ·  {source}  →  {target} / {step['destination_name']}"
+    source_path = f"{step['source_dir'].rstrip('/')}/{step['source_name']}"
+    target_path = f"{step['destination_dir'].rstrip('/')}/{step['destination_name']}"
+    return f"{source}  {source_path}\n→ {target}  {target_path}"
 
 
 class StepDialog(QDialog):
     def __init__(self, endpoints, step=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Configure file-copy step')
-        self.resize(640, 280)
+        self.resize(760, 230)
         self.endpoints = [list(item) for item in endpoints]
-        layout = QFormLayout(self)
-        self.source = QComboBox(); self.destination = QComboBox()
+        layout = QVBoxLayout(self)
+        self.source = QComboBox()
+        self.destination = QComboBox()
         for endpoint in self.endpoints:
             name = format_endpoint(endpoint)
             self.source.addItem(name, endpoint)
             self.destination.addItem(name, endpoint)
-        self.source_dir = QLineEdit('/'); self.source_name = QLineEdit()
-        self.destination_dir = QLineEdit('/'); self.destination_name = QLineEdit()
-        layout.addRow('Source connection', self.source)
-        layout.addRow('Source directory', self.source_dir)
-        layout.addRow('Source filename', self.source_name)
-        layout.addRow('Destination connection', self.destination)
-        layout.addRow('Destination directory', self.destination_dir)
-        layout.addRow('Destination filename', self.destination_name)
-        buttons = QHBoxLayout(); ok = QPushButton('Save step'); cancel = QPushButton('Cancel')
-        buttons.addWidget(ok); buttons.addWidget(cancel); layout.addRow(buttons)
-        ok.clicked.connect(self._accept_checked); cancel.clicked.connect(self.reject)
+        self.source_dir = QLineEdit('/')
+        self.source_name = QLineEdit()
+        self.destination_dir = QLineEdit('/')
+        self.destination_name = QLineEdit()
+        locations = QHBoxLayout()
+        for label, connection, directory, filename in (
+            ('Copy from', self.source, self.source_dir, self.source_name),
+            ('Copy to', self.destination, self.destination_dir, self.destination_name),
+        ):
+            group = QGroupBox(label)
+            form = QFormLayout(group)
+            form.addRow('Connection', connection)
+            form.addRow('Directory', directory)
+            form.addRow('Filename', filename)
+            locations.addWidget(group, 1)
+        layout.addLayout(locations)
+        buttons = QHBoxLayout()
+        cancel = QPushButton('Cancel')
+        save = QPushButton('Save step')
+        save.setObjectName('primaryAction')
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+        save.clicked.connect(self._accept_checked)
+        cancel.clicked.connect(self.reject)
         if step:
             for widget, key in ((self.source, 'source_endpoint'), (self.destination, 'destination_endpoint')):
                 if list(step[key]) not in self.endpoints:
@@ -51,12 +69,14 @@ class StepDialog(QDialog):
                 getattr(self, key).setText(step[key])
         elif len(self.endpoints) >= 2:
             self.destination.setCurrentIndex(1)
+        self.source_name.textChanged.connect(self.destination_name.setPlaceholderText)
+        self.destination_name.setPlaceholderText(self.source_name.text())
 
     def step(self):
         return _validate_step(dict(action='copy_remote',
             source_endpoint=self.source.currentData(), destination_endpoint=self.destination.currentData(),
             source_dir=self.source_dir.text(), source_name=self.source_name.text(),
-            destination_dir=self.destination_dir.text(), destination_name=self.destination_name.text()))
+            destination_dir=self.destination_dir.text(), destination_name=self.destination_name.text() or self.source_name.text()))
 
     def _accept_checked(self):
         try:
@@ -83,10 +103,15 @@ class WorkflowDialog(QDialog):
         self.steps = deepcopy(steps or [])
         outer = QVBoxLayout(self)
         outer.addWidget(QLabel('Workflow name'))
-        self.name = QLineEdit(name); self.name.setPlaceholderText('e.g. Back up project files')
+        self.name = QLineEdit(name)
+        self.name.setPlaceholderText('e.g. Back up project files')
+        self.name.setMaxLength(140)
         outer.addWidget(self.name)
-        outer.addWidget(QLabel('Operations execute in order. Existing destination files are protected.'))
-        self.items = QListWidget(); outer.addWidget(self.items, 1)
+        self.steps_summary = QLabel()
+        outer.addWidget(self.steps_summary)
+        self.items = QListWidget()
+        self.items.setSpacing(4)
+        outer.addWidget(self.items, 1)
         tools = QHBoxLayout()
         self.add_btn = QPushButton('Add step'); self.edit_btn = QPushButton('Edit step')
         self.remove_btn = QPushButton('Remove'); self.up_btn = QPushButton('Move up'); self.down_btn = QPushButton('Move down')
@@ -99,21 +124,38 @@ class WorkflowDialog(QDialog):
         self.remove_btn.clicked.connect(self.remove_step)
         self.up_btn.clicked.connect(lambda: self.move_step(-1))
         self.down_btn.clicked.connect(lambda: self.move_step(1))
-        save.clicked.connect(self._accept_checked); cancel.clicked.connect(self.reject)
+        save.setObjectName('primaryAction')
+        save.clicked.connect(self._accept_checked)
+        cancel.clicked.connect(self.reject)
+        self.items.currentRowChanged.connect(self.update_step_actions)
+        self.items.itemDoubleClicked.connect(lambda _: self.edit_step())
         self.refresh()
 
     def refresh(self, focus=None):
         self.items.clear()
         for number, step in enumerate(self.steps, 1):
             self.items.addItem(f'{number}. {format_step(step)}')
-        if focus is not None and self.steps:
-            self.items.setCurrentRow(max(0, min(focus,len(self.steps)-1)))
+        if self.steps:
+            self.items.setCurrentRow(max(0, min(focus or 0, len(self.steps) - 1)))
+        if self.steps:
+            summary = f'{len(self.steps)} copy steps · Run in order'
+        elif len(self.endpoints) < 2:
+            summary = 'Connect to two distinct servers to add a copy step.'
+        else:
+            summary = 'Add a copy step to get started.'
+        self.steps_summary.setText(summary)
+        self.update_step_actions()
+
+    def update_step_actions(self, *_):
+        row = self.items.currentRow()
+        selected = row >= 0
+        self.add_btn.setEnabled(len(self.endpoints) >= 2 and len(self.steps) < 100)
+        self.edit_btn.setEnabled(selected)
+        self.remove_btn.setEnabled(selected)
+        self.up_btn.setEnabled(row > 0)
+        self.down_btn.setEnabled(selected and row < len(self.steps) - 1)
 
     def add_step(self):
-        if len(self.steps) >= 100:
-            QMessageBox.warning(self, 'Step limit', 'Workflows support at most 100 steps.'); return
-        if len(self.endpoints) < 2:
-            QMessageBox.warning(self, 'Connections required', 'Connect to two distinct servers to add a step.'); return
         dialog = StepDialog(self.endpoints, parent=self)
         if dialog.exec() == QDialog.Accepted:
             self.steps.append(dialog.step()); self.refresh(len(self.steps)-1)

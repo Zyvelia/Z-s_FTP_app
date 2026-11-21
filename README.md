@@ -8,7 +8,7 @@ Z FTP is a Windows file transfer client and optional server for FTP, FTPS, and S
 2. Open **Z FTP**, select the server protocol, and enter the host and login details.
 3. Use the local and remote file panes to drag files into the transfer queue.
 
-Saved connections, independent server tabs, resumable transfers, SHA-256 verification, sync previews, history, schedules, and cross-server copy workflows are included. The **PS3 Wi-Fi preset** and **Benchmark PS3** are optional tools under **Client → Transfers → Settings**.
+Saved connections, independent server tabs, resumable transfers, SHA-256 verification, sync previews, transfer history, and manual workflows are included. The **PS3 Wi-Fi preset** and **Benchmark PS3** are optional tools under **Client → Transfers → Settings**.
 
 ## Updating an installed copy
 
@@ -21,6 +21,10 @@ On Windows, install Python 3.11 or later and run `start_windows.bat`. Use `pytho
 The release workflow builds a Windows installer when a matching version tag is pushed, then attaches it to a stable GitHub Release. Update the version in the app, installer, build script, and version assertions before tagging. The installer filename must match the tag (for example, `ZFTP_Setup_v2.1.12.exe` for `v2.1.12`).
 
 See the [v2.1.12 changelog](docs/changelog/CHANGELOG_v2.1.12.md), [release history](docs/RELEASE_HISTORY.md), and [security notes](docs/SECURITY.md).
+
+### Review transfers and run workflows
+
+Click **Activity** above the transfer queue for connection events, transfer updates, and alerts. The **History** button opens saved transfer outcomes and CSV export directly. Open **Workflows** in the same window to create or run a saved sequence of file copies.
 
 ### View or edit PS3 PARAM.SFO files
 

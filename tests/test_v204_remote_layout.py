@@ -17,10 +17,10 @@ class RemotePanelLayoutTests(unittest.TestCase):
         self.assertIn('progress_row.addWidget(self.progress, 1)', MAIN)
         self.assertIn('progress_row.addWidget(self.cancel)', MAIN)
         self.assertNotIn('layout.addWidget(self.status)', MAIN.split('class MainWindow')[0])
-    def test_activity_hidden_but_not_removed(self):
-        self.assertIn('self.bottom_tabs.setVisible(False)', MAIN)
-        self.assertIn('self.activity_toggle.toggled.connect(self.bottom_tabs.setVisible)', MAIN)
-        for name in ('History', 'Schedules', 'Workflows', 'Cross-server'):
+    def test_activity_opens_in_a_resizable_dialog(self):
+        self.assertIn('self.transfer_details = QDialog(self)', MAIN)
+        self.assertIn('details_layout.addWidget(self.bottom_tabs)', MAIN)
+        for name in ('Activity', 'History', 'Workflows'):
             self.assertIn("'"+name+"'", MAIN)
     def test_ps3_listing_fix_preserved(self):
         engine=(ROOT/'zftp/protocols/ftp_engine.py').read_text(encoding='utf-8')

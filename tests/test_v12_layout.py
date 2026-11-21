@@ -5,10 +5,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class V12Layout(unittest.TestCase):
     def test_v12_new_features_wired_into_queue(self):
         source = ui_text(ROOT)
-        for piece in ('verify_transfer(backend', 'self.history.record(', 'self.schedules.claim(',
-                      'self.schedules.finish(', 'self.queue.add(task)', 'inventory_remote(',
-                      'self.bottom_tabs.addTab(self.history_panel',
-                      'self.bottom_tabs.addTab(self.schedules_panel'):
+        for piece in ('verify_transfer(backend', 'self.history.record(', 'self.queue.add(',
+                      'inventory_remote(', 'self.bottom_tabs.addTab(self.history_panel',
+                      'self.history_button.clicked.connect(self.show_history)'):
             self.assertIn(piece, source)
     def test_servers_and_packaging_preserved(self):
         source = ui_text(ROOT)

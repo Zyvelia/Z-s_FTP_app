@@ -30,13 +30,10 @@ from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
-from zftp.ui.notifications import NotificationHistory
 from zftp.transfers.integrity import verify_transfer
 from zftp.services.transfer_history import TransferHistory
-from zftp.services.scheduler import ScheduleStore
 from zftp.services.workflows import WorkflowStore
 from zftp.ui.workflow_dialog import WorkflowDialog
-from zftp.transfers.cross_server import copy_file
 from zftp.ui.ui_theme import APP_STYLESHEET, status_label
 from zftp.services.sync_engine import (Inventory, Change, inventory_local, inventory_remote, plan,
                          safe_local_target, relpath, unique_name)
@@ -77,7 +74,6 @@ class RemoteTab(QWidget):
         self.delete = QPushButton('Delete file')
         self.download = QPushButton('↓ Download')
         self.download.setObjectName('primaryAction')
-        self.copy_to_server = QPushButton('Copy to server…')
         self.rename_btn = QPushButton('Rename')
         self.edit_btn = QPushButton('Edit text / SFO')
         self.search_btn = QPushButton('Search')
@@ -85,7 +81,7 @@ class RemoteTab(QWidget):
         self.disconnect = QPushButton('Disconnect')
         self.manage_menu = QMenu(self)
         for button in (self.mkdir, self.rename_btn, self.edit_btn, self.search_btn,
-                       self.permissions_btn, self.delete, self.copy_to_server):
+                       self.permissions_btn, self.delete):
             action = self.manage_menu.addAction(button.text())
             action.triggered.connect(button.click)
             button.changed_state_action = action
@@ -122,13 +118,13 @@ class RemoteTab(QWidget):
 
     def set_controls(self):
         active = self.state.connected and not self.state.busy and not self.state.closing
-        for button in (self.up, self.refresh, self.mkdir, self.delete, self.download, self.copy_to_server, self.rename_btn, self.edit_btn, self.search_btn, self.permissions_btn):
+        for button in (self.up, self.refresh, self.mkdir, self.delete, self.download, self.rename_btn, self.edit_btn, self.search_btn, self.permissions_btn):
             button.setEnabled(active)
         self.back.setEnabled(active and self.nav_index > 0)
         self.forward.setEnabled(active and self.nav_index + 1 < len(self.nav_history))
         self.disconnect.setEnabled(not self.state.busy and not self.state.closing)
         self.more_actions.setEnabled(active)
-        for button in (self.mkdir, self.rename_btn, self.edit_btn, self.search_btn, self.permissions_btn, self.delete, self.copy_to_server):
+        for button in (self.mkdir, self.rename_btn, self.edit_btn, self.search_btn, self.permissions_btn, self.delete):
             button.changed_state_action.setEnabled(active)
         self.cancel.setEnabled(self.state.busy and self.cancel.property('transfer_active') is True)
 

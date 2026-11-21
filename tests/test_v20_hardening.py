@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from zftp.protocols.ftp_engine import clean_remote_name
 from zftp.transfers.reliable_transfer import download, UnsafeResumeError, TransferSettings
-from zftp.services.scheduler import ScheduleStore
 from zftp.services.transfer_history import TransferHistory
 from zftp.servers.server_core import ServerAccount, ServerConfig, validate_setup
 
@@ -18,29 +17,6 @@ class HardeningTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-
-    def test_scheduler_connections_are_explicitly_closed(self):
-        real = sqlite3.connect
-        connections = []
-        class CloseTracked:
-            def __init__(self, conn): self.conn = conn; self.closed = False
-            def __enter__(self): return self.conn.__enter__()
-            def __exit__(self, *args): return self.conn.__exit__(*args)
-            def close(self): self.closed = True; self.conn.close()
-            def __getattr__(self, name): return getattr(self.conn, name)
-            def __setattr__(self, name, value):
-                if name in ("conn", "closed"): object.__setattr__(self, name, value)
-                else: setattr(self.conn, name, value)
-        def spy(*args, **kwargs):
-            c = CloseTracked(real(*args, **kwargs)); connections.append(c); return c
-        with patch('zftp.services.scheduler.sqlite3.connect', side_effect=spy):
-            store = ScheduleStore(self.root/'jobs.db')
-            store.all()
-            store.add('backup', 'upload', store.endpoint('SFTP','localhost',2222,'alice'),
-                      str(self.root/'input'), '/data', 1234)
-            store.all()
-        self.assertGreaterEqual(len(connections), 4)
-        self.assertTrue(all(c.closed for c in connections))
 
     def test_history_connections_are_explicitly_closed(self):
         real = sqlite3.connect

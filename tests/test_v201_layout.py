@@ -22,5 +22,5 @@ class LayoutTests(unittest.TestCase):
         self.assertIn("self.ssh_row.setVisible(protocol == 'SFTP')", MAIN)
 
     def test_remote_callbacks_remain(self):
-        for identifier in ('self.rename_btn', 'self.edit_btn', 'self.search_btn', 'self.permissions_btn', 'self.copy_to_server'):
+        for identifier in ('self.rename_btn', 'self.edit_btn', 'self.search_btn', 'self.permissions_btn'):
             self.assertIn(identifier, MAIN)

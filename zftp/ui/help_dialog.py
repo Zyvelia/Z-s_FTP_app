@@ -26,17 +26,16 @@ TOPICS = (
     ('Queue & verification', (
         ('Transfers', 'The queue shows running and pending jobs, progress, and errors. Select a row to cancel that job, or use Clear finished to remove completed rows from the display.'),
         ('Settings', 'Adjust the bandwidth limit, retry count, backoff, and chunk size in transfer settings. SHA-256 verification can add transfer time because it reads the remote data again.'),
-        ('Activity and history', 'Activity logs describe jobs and failures. Notifications include completion summaries. History can be exported as CSV. Desktop notifications can be toggled in the status bar.'),
+        ('Activity and history', 'Activity shows session events and alerts in one feed. Click History above the transfer queue to see saved transfer outcomes or export them as CSV. Toggle desktop notifications in the status bar.'),
     )),
     ('PS3 file tools', (
         ('Identify a game', 'Right-click PARAM.SFO and choose View / edit PARAM.SFO to see TITLE, TITLE_ID, CATEGORY, and other fields. Right-click a games folder and choose PS3 file tools → Browse game metadata to see several titles in one list.'),
         ('Inspect', 'Inspect PKG header shows the Content ID and declared size. Preview image opens PNG and JPEG files, including ICON0.PNG.'),
         ('Edit', 'Edit config changes existing key/value entries. Edit boot plugins checks listed paths. The hex editor supports same-length changes, and the image preview can replace ICON0.PNG. Remote edits keep a backup in the same folder.'),
     )),
-    ('Sync, schedules & workflows', (
+    ('Sync & workflows', (
         ('Sync preview', 'Compare the local and remote folders and review proposed copies before queueing them. Existing contents are kept by default. A same-size match is not a checksum match.'),
-        ('Schedules and workflows', 'Use Schedules for recurring comparisons and Workflows for repeatable sequences of supported operations. Check their status in the lower panel.'),
-        ('Cross-server', 'With two connections open, select a remote file and choose Copy to server to send it to the other connection.'),
+        ('Run a workflow', 'Open Activity → Workflows and choose New workflow to save a sequence of file copies. Keep one tab connected to each server used by the current step. Choose Run to start, or Pause after step to stop before the next copy.'),
     )),
     ('Hosting a server', (
         ('FTP/FTPS Server and SFTP Server', 'These pages make your PC the server. Set the shared folder, address, credentials, and access options before starting. Use Connection when you want to connect to your PS3 instead.'),
