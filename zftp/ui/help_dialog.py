@@ -20,6 +20,7 @@ TOPICS = (
     )),
     ('File browser & uploads', (
         ('Local and remote', 'The left pane shows your PC. The right tabs show connected servers. Double-click a folder to open it. Use Up, Back, Forward, or Refresh to navigate.'),
+        ('Go to a remote folder', 'Use Go to folder to enter an absolute path. FTP 550 means the server refused the requested operation. On a PS4, check /mnt/usb0 or /mnt/usb1 for a mounted USB drive if your FTP server exposes those paths. For an uploaded PKG, check the folder you uploaded it to, such as /data. Use File actions → Search to look for .pkg in an accessible folder.'),
         ('Upload', 'Select local files and click Upload, or drag them onto a Remote tab. Check the remote path first because that is the upload destination.'),
         ('File actions', 'Right-click a file or open File actions to rename it, edit supported text, change permissions, or delete it. Remote deletion is permanent.'),
     )),
