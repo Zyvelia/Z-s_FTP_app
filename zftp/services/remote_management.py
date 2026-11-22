@@ -6,6 +6,7 @@ replace the current file: they compare snapshots then keep a recovery backup.
 """
 from __future__ import annotations
 
+from codecs import BOM_UTF8, BOM_UTF16_BE, BOM_UTF16_LE
 from dataclasses import dataclass
 import hashlib
 import posixpath
@@ -36,20 +37,42 @@ def validate_name(name: str) -> str:
     return name
 
 
-def decode_text_preview(data: bytes) -> str:
-    """Display common Windows and UTF-8 text files without modifying their bytes."""
-    if data.startswith((b'\xff\xfe', b'\xfe\xff')):
-        text = data.decode('utf-16')
+@dataclass(frozen=True)
+class TextCopy:
+    content: str
+    encoding: str
+    bom: bytes
+    newline: str
+
+    def encode(self, text):
+        normalized = text.replace('\r\n', '\n').replace('\r', '\n')
+        if '\x00' in normalized:
+            raise ValueError('Text cannot contain NUL bytes')
+        return self.bom + normalized.replace('\n', self.newline).encode(self.encoding)
+
+
+def identify_text(data, *, strict_controls=False):
+    for bom, encoding in ((BOM_UTF8, 'utf-8'), (BOM_UTF16_LE, 'utf-16-le'), (BOM_UTF16_BE, 'utf-16-be')):
+        if data.startswith(bom):
+            text = data[len(bom):].decode(encoding)
+            break
     else:
-        if b'\x00' in data:
-            raise ValueError('This file contains binary data')
-        try:
-            text = data.decode('utf-8-sig')
-        except UnicodeDecodeError:
-            text = data.decode('cp1252', errors='replace')
-    if '\x00' in text:
+        bom = b''
+        for encoding in ('utf-8', 'cp1252', 'latin-1'):
+            try:
+                text = data.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+    if '\x00' in text or (strict_controls and any(
+            not character.isprintable() and character not in '\t\n\r\f' for character in text)):
         raise ValueError('This file contains binary data')
-    return text
+    newline = '\r\n' if '\r\n' in text else '\r' if '\r' in text else '\n'
+    return TextCopy(text, encoding, bom, newline)
+
+
+def decode_text_preview(data: bytes) -> str:
+    return identify_text(data).content
 
 
 def read_editor_snapshot(backend, name: str, limit: int = MAX_EDITOR_BYTES) -> EditorSnapshot:
@@ -81,7 +104,8 @@ def safe_save_editor(backend, snapshot: EditorSnapshot, updated: str) -> str:
     return safe_save_remote_bytes(backend, snapshot.name, snapshot.sha256, encode_editor_text(updated))
 
 
-def safe_save_remote_bytes(backend, name: str, expected_sha256: str, payload: bytes) -> str:
+def safe_save_remote_bytes(backend, name: str, expected_sha256: str, payload: bytes, *,
+                           limit=MAX_EDITOR_BYTES, before_publish=None) -> str:
     """Stage edited data, preserve old file as backup, then swap via renames.
 
     A failed publish attempts rollback, leaving a backup/stage for recovery when
@@ -90,9 +114,9 @@ def safe_save_remote_bytes(backend, name: str, expected_sha256: str, payload: by
     external simultaneous writers still require server-side locking for certainty.
     """
     name = validate_name(name)
-    if len(payload) > MAX_EDITOR_BYTES:
+    if len(payload) > limit:
         raise ValueError('Edited file exceeds the size limit')
-    old = backend.read_bytes(name, MAX_EDITOR_BYTES)
+    old = backend.read_bytes(name, limit)
     if hashlib.sha256(old).hexdigest() != expected_sha256:
         raise RemoteConflictError('Remote file changed since it was opened; save aborted')
     if old == payload:
@@ -102,9 +126,11 @@ def safe_save_remote_bytes(backend, name: str, expected_sha256: str, payload: by
     backup = validate_name(f'.zftp-backup-{nonce}.bak')
     backend.write_new_bytes(staged, payload)
     try:
-        check = backend.read_bytes(name, MAX_EDITOR_BYTES)
+        check = backend.read_bytes(name, limit)
         if hashlib.sha256(check).hexdigest() != expected_sha256:
             raise RemoteConflictError('Remote file changed during editing; save aborted')
+        if before_publish is not None:
+            before_publish()
         backend.rename(name, backup)
     except BaseException:
         try: backend.delete_file(staged)

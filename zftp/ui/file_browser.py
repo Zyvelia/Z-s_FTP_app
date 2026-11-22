@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import sys
 import os
 import time
@@ -29,7 +30,7 @@ from zftp.transfers.reliable_transfer import TransferSettings, download as resil
 from zftp.transfers.ps3_performance import benchmark_ftp_upload, PRESETS
 from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (
-    RemoteConflictError, RemoteDirectoryRestoreError, decode_text_preview, delete_remote_tree, find_remote,
+    RemoteConflictError, RemoteDirectoryRestoreError, delete_remote_tree, find_remote,
     read_editor_snapshot, safe_save_editor, validate_name,
 )
 from zftp.ui.server_ui import ServerPanel
@@ -44,6 +45,10 @@ from zftp.services.sync_engine import (Inventory, Change, inventory_local, inven
 
 
 
+from zftp.services.file_preview import (
+    PREVIEW_SUFFIXES, SQLITE_HEADER, preview_limit, read_local_copy, save_local_copy, sqlite_sidecars,
+)
+from zftp.ui.file_preview import FilePreviewDialog
 from zftp.ui.ui_workers import Job, Events
 from zftp.ui.remote_tab import RemoteTab
 from zftp.services.param_sfo import ParamSfo
@@ -120,6 +125,65 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         elif path.suffix.lower() == '.txt' and path.is_file():
             if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
                 QMessageBox.warning(self, 'Could not open text file', str(path))
+        elif path.suffix.lower() in PREVIEW_SUFFIXES and path.is_file() and not path.is_symlink():
+            self.preview_local_file(path)
+    def preview_local_file(self, path):
+        limit = preview_limit(path.name)
+
+        def read(_):
+            return read_local_copy(path, limit)
+
+        def opened(data):
+            is_sqlite = data.startswith(SQLITE_HEADER)
+            in_use = is_sqlite and any(path.with_name(name).exists() for name in sqlite_sidecars(path.name))
+
+            def save(dialog, revised):
+                if self.queue.protects_local_path(path):
+                    QMessageBox.information(self, 'File in transfer queue', 'Finish or cancel the transfer before saving.')
+                    return False
+                return self.run_local_file_job(
+                    lambda _: save_local_copy(path, data, revised, limit=limit, sqlite=is_sqlite),
+                    lambda backup: self.finish_file_save(dialog, backup),
+                    dialog.save_failed,
+                )
+
+            self.open_file_preview(path.name, data, save, sqlite_in_use=in_use)
+
+        self.run_local_file_job(read, opened)
+
+    def run_local_file_job(self, operation, after, on_error=None):
+        if self._quit_requested:
+            return False
+        job = Job(operation)
+        self.jobs.append(job)
+
+        def done(result=None, error=None):
+            self.jobs.remove(job)
+            if error is not None:
+                if on_error:
+                    on_error()
+                if not self._quit_requested:
+                    QMessageBox.warning(self, 'File operation failed', str(error))
+            elif not self._quit_requested:
+                after(result)
+
+        job.events.done.connect(done)
+        job.events.failed.connect(lambda error: done(error=error))
+        self.pool.start(job)
+        return True
+
+    def finish_file_save(self, dialog, backup):
+        dialog.saved()
+        self.notify('success', 'File saved', f'Original kept as {backup}')
+
+    def open_file_preview(self, name, data, save, *, sqlite_in_use=False):
+        try:
+            dialog = FilePreviewDialog(name, data, save, sqlite_in_use=sqlite_in_use, parent=self)
+        except (ValueError, AttributeError, sqlite3.Error) as error:
+            QMessageBox.warning(self, 'Could not open file', str(error))
+            return
+        dialog.show()
+
     def selected_local(self):
         row = self.local_table.currentRow()
         item = self.local_table.item(row, 0) if row >= 0 else None
@@ -399,46 +463,82 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         entry = state.entries[row]
         if entry.is_dir:
             self.navigate(tab, entry.name)
-        elif not entry.is_link and entry.name.lower().endswith('.txt'):
-            self.preview_remote_text(tab, entry)
+        elif not entry.is_link and Path(entry.name).suffix.lower() in PREVIEW_SUFFIXES:
+            self.preview_remote_file(tab, entry)
 
-    def preview_remote_text(self, tab, entry):
+    def preview_remote_file(self, tab, entry):
         state = self.sessions[tab]
-        if entry.size is not None and entry.size > MAX_EDITOR_BYTES:
-            QMessageBox.information(self, 'Text file too large', 'Download the file to open it. The preview limit is 1 MiB.')
+        limit = preview_limit(entry.name)
+        if entry.size is not None and entry.size > limit:
+            QMessageBox.information(self, 'File too large',
+                                    f'The editor limit for this file is {limit // (1024 * 1024)} MiB.')
             return
         try:
             name = validate_name(entry.name)
         except ValueError as error:
-            QMessageBox.warning(self, 'Invalid text filename', str(error))
+            QMessageBox.warning(self, 'Invalid filename', str(error))
             return
         folder = state.remote_path
+
+        def has_sidecars():
+            reserved = {sidecar.casefold() for sidecar in sqlite_sidecars(name)}
+            return any(item.name.casefold() in reserved for item in state.backend.list_dir())
 
         def read(_):
             state.backend.cwd(folder)
             try:
-                data = state.backend.read_bytes(name, MAX_EDITOR_BYTES)
+                data = state.backend.read_bytes(name, limit)
             except ValueError:
                 # An FTP read aborted at the size limit can leave pending control replies.
                 if state.protocol in ('FTP', 'FTPS'):
                     state.connected = False
                 raise
-            return decode_text_preview(data)
+            return data, data.startswith(SQLITE_HEADER) and has_sidecars()
 
-        def opened(text):
-            dialog = QDialog(self)
-            dialog.setAttribute(Qt.WA_DeleteOnClose)
-            dialog.setWindowTitle(name)
-            dialog.resize(720, 500)
-            layout = QVBoxLayout(dialog)
-            viewer = QPlainTextEdit()
-            viewer.setReadOnly(True)
-            viewer.setPlainText(text)
-            layout.addWidget(viewer)
-            close = QPushButton('Close')
-            close.clicked.connect(dialog.close)
-            layout.addWidget(close, alignment=Qt.AlignRight)
-            dialog.show()
+        def opened(result):
+            data, in_use = result
+
+            def save(dialog, revised):
+                if not state.connected or state.busy or state.closing or tab not in self.sessions:
+                    QMessageBox.information(self, 'Server unavailable', 'Wait for the server tab to be connected and idle.')
+                    return False
+                session_ids = {str(id(other)) for other in self.sessions if self.endpoint_for(other) == self.endpoint_for(tab)}
+                if self.queue.protects_remote_path(session_ids, folder, name):
+                    QMessageBox.information(self, 'File in transfer queue', 'Finish or cancel the transfer before saving.')
+                    return False
+                current = state.remote_path
+
+                def check_database():
+                    if data.startswith(SQLITE_HEADER) and has_sidecars():
+                        raise RemoteConflictError('Close the application using this database before editing it')
+
+                def publish(_):
+                    try:
+                        state.backend.cwd(folder)
+                        check_database()
+                        digest = hashlib.sha256(data).hexdigest()
+                        return safe_save_remote_bytes(state.backend, name, digest, revised,
+                                                      limit=limit, before_publish=check_database)
+                    finally:
+                        if current != folder:
+                            try:
+                                state.backend.cwd(current)
+                            except Exception:
+                                state.connected = False
+                                raise
+
+                def complete(backup):
+                    tab.directory_cache.invalidate(folder)
+                    self.finish_file_save(dialog, posixpath.join(folder, backup))
+                    self.refresh(tab)
+
+                def failed(_error):
+                    dialog.save_failed()
+                    return False
+
+                return self.run_session_job(tab, f'Saving {name}', publish, complete, failed)
+
+            self.open_file_preview(name, data, save, sqlite_in_use=in_use)
 
         self.run_session_job(tab, f'Opening {name}', read, opened)
 

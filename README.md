@@ -38,6 +38,10 @@ Click **Activity** above the transfer queue for connection events, transfer upda
 
 Transfers skip the extra checksum pass by default. Enable **Full SHA-256 verification** in **Transfer settings** when you want an end-to-end checksum comparison. It reads the remote file again and can substantially increase transfer time.
 
+### Read or edit logs, configuration files, and database files
+
+Double-click a remote `.txt`, `.log`, `.logs`, `.ini`, `.db`, or `.dat` file to open its viewer. Local files with those extensions open the same way, with local `.txt` files using your default text app. Click **Edit**, then **Save with backup**. The editor recognizes text and SQLite by their contents and shows other binary data as hex. Text files are limited to 1 MiB, database and data files to 8 MiB, and binary edits to 64 KiB. Hex edits keep the same byte count. SQLite shows up to 100 rows per table and supports editing existing values in ordinary tables with row IDs.
+
 ### View or edit PS3 PARAM.SFO files
 
 In the remote browser, open the game’s folder, right-click `PARAM.SFO`, and choose **View / edit PARAM.SFO**. You can check fields such as `TITLE`, `TITLE_ID`, and `CATEGORY` without saving. The editor supports UTF-8 text and unsigned integers in their existing field space and shows raw fields as read-only. **Save with backup** checks whether the file changed since opening and keeps the original in the same remote folder.

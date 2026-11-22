@@ -257,6 +257,35 @@ class GUIv1SmokeTests(unittest.TestCase):
         self.assertTrue(text.isReadOnly())
         self.assertEqual(text.toPlainText(), '<html>café</html>')
 
+    def test_remote_ini_edits_preserve_encoding_and_use_remote_backup(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        backend = Mock()
+        original = '﻿name=café\r\n'.encode('utf-8')
+        backend.read_bytes.return_value = original
+        state = ConnectionSession(backend, 'FTP', 'localhost', 21, 'test', connected=True)
+        state.entries = [RemoteEntry('settings.INI', False, len(original))]
+        tab = RemoteTab(state, window)
+        window.sessions[tab] = state
+        self.addCleanup(window.sessions.clear)
+
+        with patch.object(window, 'run_session_job') as start:
+            window.open_remote(tab, 0)
+            _, _, read, show = start.call_args.args
+            show(read(None))
+            dialog = next(d for d in window.findChildren(QDialog) if d.windowTitle() == 'settings.INI')
+            self.addCleanup(dialog.saved)
+            dialog.edit.click()
+            dialog.viewer.setPlainText('name=résumé\n')
+            with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
+                dialog.save_button.click()
+            _, _, publish, *_ = start.call_args.args
+            backup = publish(None)
+        staged, payload = backend.write_new_bytes.call_args.args
+        self.assertEqual(payload, '﻿name=résumé\r\n'.encode('utf-8'))
+        self.assertEqual([call.args for call in backend.rename.call_args_list],
+                         [('settings.INI', backup), (staged, 'settings.INI')])
+
     def test_folder_eta_and_bar_update_before_any_file_finishes(self):
         window = MainWindow()
         self.addCleanup(window.close)

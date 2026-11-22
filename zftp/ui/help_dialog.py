@@ -19,7 +19,7 @@ TOPICS = (
         ('SFTP keys', 'The SSH key field can point to your private key file. Verify a server’s host fingerprint before trusting it.'),
     )),
     ('File browser & uploads', (
-        ('Local and remote', 'The left pane shows your PC. The right tabs show connected servers. Double-click a folder to open it. Double-click a .txt file to read it. Use Up, Back, Forward, or Refresh to navigate.'),
+        ('Local and remote', 'The left pane shows your PC. The right tabs show connected servers. Double-click a folder to open it. Double-click a .txt, .log, .logs, .ini, .db, or .dat file to read it. In the file viewer, click Edit to change supported text, hex bytes, or SQLite fields, then save with a backup. Use Up, Back, Forward, or Refresh to navigate.'),
         ('Upload', 'Select local files and click Upload, or drag them onto a Remote tab. Check the remote path first because that is the upload destination.'),
         ('File actions', 'Right-click a file or open File actions to rename it, edit supported text, change permissions, or delete it. Remote deletion is permanent. Deleting a folder removes its files and subfolders after confirmation.'),
     )),

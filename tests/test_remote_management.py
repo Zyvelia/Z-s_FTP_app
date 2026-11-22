@@ -1,9 +1,14 @@
 import hashlib
+import sqlite3
+import tempfile
 import unittest
+from contextlib import closing
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from zftp.protocols.ftp_engine import FTPBackend, RemoteEntry
+from zftp.services.file_preview import SQLiteCopy, save_local_copy
 from zftp.services.remote_management import (RemoteConflictError, decode_text_preview, delete_remote_tree,
                                find_remote, read_editor_snapshot,
                                safe_save_editor, encode_editor_text, validate_name)
@@ -145,6 +150,32 @@ class RemoteManagementTests(unittest.TestCase):
                 self.assertEqual(decode_text_preview('café'.encode(encoding)), 'café')
         with self.assertRaisesRegex(ValueError, 'binary'):
             decode_text_preview(b'bin\x00data')
+
+    def test_sqlite_preview_updates_snapshot_with_quoted_identifiers(self):
+        with closing(sqlite3.connect(':memory:')) as database:
+            database.execute('CREATE TABLE "config""table" (id INTEGER PRIMARY KEY, label TEXT, n INTEGER)')
+            database.execute('INSERT INTO "config""table" VALUES (1, ?, 7)', ('Original',))
+            original = database.serialize()
+        copy = SQLiteCopy(original)
+        self.assertEqual(copy.tables(), ['config"table'])
+        table = copy.read_table('config"table')
+        revised = copy.update(table, [(0, 1, 'New'), (0, 2, 9)])
+        self.assertEqual(SQLiteCopy(revised).read_table(table.name).rows, ((1, 'New', 9),))
+        self.assertEqual(copy.read_table(table.name).rows, ((1, 'Original', 7),))
+        with self.assertRaisesRegex(ValueError, 'read-only'):
+            copy.update(table, [(0, 0, 20)])
+
+    def test_local_edit_keeps_backup_and_blocks_external_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'settings.ini'
+            original, revised = b'key=old', b'key=new'
+            path.write_bytes(original)
+            backup = save_local_copy(path, original, revised, limit=1024)
+            self.assertEqual(path.read_bytes(), revised)
+            self.assertEqual(backup.read_bytes(), original)
+            with self.assertRaises(RemoteConflictError):
+                save_local_copy(path, original, b'unexpected', limit=1024)
+            self.assertEqual(path.read_bytes(), revised)
 
     def test_ftp_management_calls(self):
         b = FTPBackend()
