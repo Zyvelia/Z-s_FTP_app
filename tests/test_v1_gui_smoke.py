@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
-    from PySide6.QtCore import QUrl
+    from PySide6.QtCore import QCoreApplication, QEvent, QUrl
     from PySide6.QtTest import QSignalSpy, QTest
     from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QPlainTextEdit
     from zftp.ui.main_window import MainWindow
@@ -116,6 +116,8 @@ class GUIv1SmokeTests(unittest.TestCase):
                   patch.object(panel, '_launch') as launch):
                 panel._download_backend(executable, folder)
                 self.assertTrue(QSignalSpy(panel._download.finished).wait(3000))
+                # QNetworkReply holds the local fixture open until its deferred deletion.
+                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
                 launch.assert_called_once_with(executable, folder)
                 self.assertEqual(executable.read_bytes(), data)
                 self.assertFalse(panel.active_or_stopping)
@@ -124,6 +126,7 @@ class GUIv1SmokeTests(unittest.TestCase):
                 source.write_bytes(b'altered binary!')
                 panel._download_backend(executable, folder)
                 self.assertTrue(QSignalSpy(panel._download.finished).wait(3000))
+                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
                 launch.assert_not_called()
                 self.assertIn('checksum', panel.status.text())
                 self.assertEqual(executable.read_bytes(), data)
