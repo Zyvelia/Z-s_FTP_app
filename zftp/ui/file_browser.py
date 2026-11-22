@@ -181,9 +181,7 @@ class FileBrowserMixin(Ps3FileToolsMixin):
     def delete_local(self, source):
         if source.is_symlink():
             QMessageBox.warning(self, 'Delete blocked', 'Symbolic links are not supported here.'); return
-        if any(j.status in ('Running', 'Queued') and
-               source == Path(j.source if j.direction == 'upload' else j.destination)
-               for j in self.queue.jobs):
+        if self.queue.protects_local_path(source):
             QMessageBox.warning(self, 'File in transfer queue',
                                 'Finish or cancel its queued transfer before deleting this item.')
             return
@@ -191,6 +189,10 @@ class FileBrowserMixin(Ps3FileToolsMixin):
                 f'Move this local item to the Recycle Bin?\n\n{source}\n\n'
                 'This may include an entire folder and its contents.',
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if self.queue.protects_local_path(source):
+            QMessageBox.warning(self, 'File in transfer queue',
+                                'Finish or cancel its queued transfer before deleting this item.')
             return
         if not QFile.moveToTrash(str(source)):
             QMessageBox.warning(self, 'Recycle Bin unavailable',
@@ -213,11 +215,16 @@ class FileBrowserMixin(Ps3FileToolsMixin):
             edit_action = menu.addAction(edit_label) if not entry.is_dir else None
             permissions_action = menu.addAction('Permissions…')
             delete_action = menu.addAction('Delete empty folder…' if entry.is_dir else 'Delete permanently…')
+            if state.downloads:
+                for action in (rename_action, edit_action, permissions_action):
+                    if action:
+                        action.setEnabled(False)
             if entry.is_link:
                 for action in (download_action, rename_action, edit_action, permissions_action, delete_action):
                     if action: action.setEnabled(False)
             menu.addSeparator()
-        self.remote_ps3_tools(menu, tab, entry)
+        if not state.downloads:
+            self.remote_ps3_tools(menu, tab, entry)
         new_action = menu.addAction('New folder…')
         refresh_action = menu.addAction('Refresh')
         picked = menu.exec(tab.table.viewport().mapToGlobal(point))
@@ -267,19 +274,30 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         tab.permissions_btn.clicked.connect(lambda: self.permissions_remote(tab))
         tab.download.clicked.connect(lambda: self.download(tab))
         tab.disconnect.clicked.connect(lambda: self.close_tab(tab))
-        tab.cancel.clicked.connect(lambda: setattr(state, 'cancelled', True))
+        def cancel_tab_transfer():
+            if state.busy and tab.cancel.property('transfer_active'):
+                state.cancelled = True
+            else:
+                state.cancel_downloads()
+        tab.cancel.clicked.connect(cancel_tab_transfer)
         tab.table.cellDoubleClicked.connect(lambda row, col: self.open_remote(tab, row))
         tab.table.setContextMenuPolicy(Qt.CustomContextMenu)
         tab.table.customContextMenuRequested.connect(lambda point, t=tab: self.remote_context_menu(t, point))
         self.password.clear(); self.passphrase.clear()
         # Login secrets remain only in this tab's in-memory reconnect closure.
         # Never serialized to the queue, logs, or saved-profile JSON.
-        def connection(_):
+        def login(target):
             if protocol == 'SFTP':
-                cwd = backend.connect(host, port, username, password or None,
+                return target.connect(host, port, username, password or None,
                                       key_filename=key_filename or None, passphrase=passphrase or None)
-            else:
-                cwd = backend.connect(host, port, username, password, tls=(protocol == 'FTPS'))
+            return target.connect(host, port, username, password, tls=(protocol == 'FTPS'))
+
+        def make_download_connection():
+            worker = backend.new_session() if protocol == 'SFTP' else FTPBackend()
+            return worker, lambda: login(worker)
+
+        def connection(_):
+            cwd = login(backend)
             return cwd, backend.list_dir()
         def after(result):
             state.connected = True
@@ -305,6 +323,7 @@ class FileBrowserMixin(Ps3FileToolsMixin):
                 return True
             return False
         tab.reconnect_fn = lambda: connection(None)[0]
+        tab.make_download_connection = make_download_connection
         self.run_session_job(tab, f'Connecting to {host}', connection, after, on_error)
     def run_session_job(self, tab, label, fn, after=None, on_error=None, *, transfer=False, progress_callback=None):
         state = self.sessions.get(tab)
@@ -414,28 +433,38 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         tab.state.entries = entries
         tab.show_entries()
     def delete(self, tab):
+        self.delete_remote_entry(tab, files_only=True)
+
+    def delete_remote_entry(self, tab, *, files_only=False):
+        """Delete regular files and, from the context menu, empty directories."""
         state = self.sessions.get(tab)
-        if not state or not state.connected or state.busy: return
+        if not state or not state.connected or state.busy or state.closing:
+            return
         entry = tab.selected()
-        if not entry or entry.is_dir:
-            QMessageBox.information(self, 'Select a file', 'Select a remote file.'); return
-        if QMessageBox.question(self, 'Delete remote file', f'Permanently delete {entry.name}?') != QMessageBox.Yes: return
-        try: name = clean_remote_name(entry.name)
+        if entry is None or (files_only and entry.is_dir):
+            QMessageBox.information(self, 'Select a file', 'Select a remote file.')
+            return
+        if entry.is_link:
+            return
+        directory = state.remote_path
+        try:
+            name = clean_remote_name(entry.name)
         except ValueError as exc:
-            QMessageBox.warning(self, 'Invalid name', str(exc)); return
-        def action(_):
-            state.backend.delete_file(name)
-            return state.backend.list_dir()
-        self.run_session_job(tab, 'Deleting remote file', action, lambda entries: self._replace_entries(tab, entries))
-    def delete_remote_entry(self, tab):
-        """Context menu deletion supports files and EMPTY directories only."""
-        state = self.sessions.get(tab)
-        if not state or not state.connected or state.busy: return
-        entry = tab.selected()
-        if entry is None or entry.is_link: return
-        try: name = clean_remote_name(entry.name)
-        except ValueError as exc:
-            QMessageBox.warning(self, 'Invalid name', str(exc)); return
+            QMessageBox.warning(self, 'Invalid name', str(exc))
+            return
+        def blocked():
+            session_ids = {
+                str(id(other)) for other in self.sessions
+                if self.endpoint_for(other) == self.endpoint_for(tab)
+            }
+            if not self.queue.protects_remote_path(session_ids, directory, name):
+                return False
+            QMessageBox.warning(self, 'Item in transfer queue',
+                                'Finish or cancel the transfer before deleting this item.')
+            return True
+
+        if blocked():
+            return
         prompt = (f'Delete EMPTY remote folder permanently?\n\n{name}\n\n'
                   'Only an empty directory can be removed.' if entry.is_dir else
                   f'Permanently delete remote file?\n\n{name}\n\n'
@@ -443,15 +472,22 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         if QMessageBox.question(self, 'Confirm remote deletion', prompt,
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
+        if state.remote_path != directory or blocked():
+            return
+
         def action(_):
-            if entry.is_dir: state.backend.remove_empty_dir(name)
-            else: state.backend.delete_file(name)
+            if entry.is_dir:
+                state.backend.remove_empty_dir(name)
+            else:
+                state.backend.delete_file(name)
             return state.backend.list_dir()
+
         self.run_session_job(tab, 'Deleting remote item', action,
                              lambda entries: self._replace_entries(tab, entries))
+
     def rename_remote(self, tab):
         state = self.sessions.get(tab)
-        if not state or not state.connected or state.busy: return
+        if not state or not state.connected or state.active: return
         entry = tab.selected()
         if not entry or entry.is_link: return
         name, ok = QInputDialog.getText(self, 'Rename remote item', 'New name', text=entry.name)
@@ -468,7 +504,7 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         self.run_session_job(tab, 'Renaming remote item', action, lambda entries: self._replace_entries(tab, entries))
     def edit_remote(self, tab):
         state = self.sessions.get(tab)
-        if not state or not state.connected or state.busy: return
+        if not state or not state.connected or state.active: return
         entry = tab.selected()
         if not entry or entry.is_dir or entry.is_link:
             QMessageBox.information(self, 'Select file', 'Select a regular remote file.'); return
@@ -573,7 +609,7 @@ class FileBrowserMixin(Ps3FileToolsMixin):
             lambda _: find_remote(state.backend, root, query), after)
     def permissions_remote(self, tab):
         state = self.sessions.get(tab)
-        if not state or not state.connected or state.busy: return
+        if not state or not state.connected or state.active: return
         entry = tab.selected()
         if not entry or entry.is_link: return
         text, ok = QInputDialog.getText(self, 'Remote permissions',

@@ -86,7 +86,7 @@ class ShutdownControlsMixin:
         # observe state.cancelled and reach their normal completion handlers.
         for tab, state in tuple(self.sessions.items()):
             self.queue.cancel_pending_for(str(id(tab)))
-            if not state.busy and not state.closing:
+            if not state.active and not state.closing:
                 self.close_tab(tab)
         if not self.sessions and not self.jobs:
             self._quit_timer.stop()
@@ -119,7 +119,7 @@ class ShutdownControlsMixin:
             else:
                 event.ignore()
             return
-        busy_sessions = [state for state in self.sessions.values() if state.busy]
+        busy_sessions = [state for state in self.sessions.values() if state.active]
         if busy_sessions:
             response = QMessageBox.question(
                 self, 'Transfers still running',
@@ -134,6 +134,7 @@ class ShutdownControlsMixin:
                 return
             for state in busy_sessions:
                 state.cancelled = True
+                state.cancel_downloads()
         if not self.sessions and not self.jobs:
             self._finish_close(event)
             return

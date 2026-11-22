@@ -32,7 +32,11 @@ See the [v2.1.12 changelog](docs/changelog/CHANGELOG_v2.1.12.md), [release histo
 
 ### Review transfers and run workflows
 
+A connection tab can run two downloads at once while you browse and delete unrelated files. The queue protects active and pending transfer paths. A server that refuses an extra connection falls back to one download at a time.
+
 Click **Activity** above the transfer queue for connection events, transfer updates, and alerts. The **History** button opens saved transfer outcomes and CSV export directly. Open **Workflows** in the same window to create or run a saved sequence of file copies.
+
+Transfers skip the extra checksum pass by default. Enable **Full SHA-256 verification** in **Transfer settings** when you want an end-to-end checksum comparison. It reads the remote file again and can substantially increase transfer time.
 
 ### View or edit PS3 PARAM.SFO files
 

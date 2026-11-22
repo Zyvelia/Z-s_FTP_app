@@ -70,6 +70,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self._tray_status_action = None
         self._tray_visibility_action = None
         self.pool = QThreadPool(self); self.pool.setMaxThreadCount(8)
+        self.download_pool = QThreadPool(self)
+        self.download_pool.setMaxThreadCount(4)
         self.jobs: list[Job] = []
         # Graceful close is a two-phase process: request cancellation, then let
         # workers finish before disconnecting and destroying their Qt owners.
@@ -381,7 +383,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         ps3_controls = QHBoxLayout()
         ps3_controls.setSpacing(6)
         self.ps3_preset = QPushButton('PS3 Wi-Fi preset')
-        self.ps3_preset.setToolTip('FTP uploads: 256 KiB chunks, unlimited bandwidth. SHA-256 checks remain enabled.')
+        self.ps3_preset.setToolTip('FTP uploads: 256 KiB chunks, unlimited bandwidth. Keeps your SHA-256 setting.')
         self.ps3_preset.clicked.connect(self.apply_ps3_preset)
         ps3_controls.addWidget(self.ps3_preset)
         self.ps3_benchmark = QPushButton('Benchmark PS3…')
@@ -394,9 +396,9 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.transfer_options_toggle.toggled.connect(self.transfer_options.setVisible)
         self.transfer_options_toggle.toggled.connect(lambda state: self.transfer_options_toggle.setText('⚙ Settings  ▾' if state else '⚙ Settings  ▸'))
         transfer_layout.addWidget(self.transfer_options)
-        self.stage_ribbon = QLabel('○ Uploading   ›   ○ Verifying   ›   ○ Renaming   ›   ○ Completed')
+        self.stage_ribbon = QLabel('No active transfers')
         self.stage_ribbon.setObjectName('stageRibbon')
-        self.stage_ribbon.setToolTip('Shows the stage of the first running transfer; verification may take additional time on PS3 Wi-Fi.')
+        self.stage_ribbon.setToolTip('Shows the stage of the first running transfer.')
         transfer_layout.addWidget(self.stage_ribbon)
         self.queue_table = QTableWidget(0, 8)
         self.queue_table.setHorizontalHeaderLabels(['Server', 'Direction', 'File', 'Progress', 'Speed', 'ETA', 'Attempts', 'Status'])
@@ -413,9 +415,9 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.queue_table.setMinimumHeight(100)
         self.queue_table.setToolTip('Select a job for details, cancel or clear finished operations')
         transfer_layout.addWidget(self.queue_table)
-        self.verify_checksums = QCheckBox('Verify transfers with SHA-256 (downloads remote file again)')
-        self.verify_checksums.setChecked(True)
-        self.verify_checksums.setToolTip('Compares SHA-256 of both completed files; may double network traffic. Fails closed if remote file cannot be read.')
+        self.verify_checksums = QCheckBox('Full SHA-256 verification (slower)')
+        self.verify_checksums.setToolTip(
+            'Optional for new transfers and workflow steps. Reads each remote file in full again to compare checksums.')
         advanced.addWidget(self.verify_checksums)
         self.cancel_job_button.clicked.connect(self.cancel_selected_job)
         self.clear_jobs_button.clicked.connect(self.clear_finished_jobs)
@@ -669,7 +671,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.empty.setVisible(not self.sessions)
         self.sync_button.setEnabled(bool(tab and tab.state.connected and not tab.state.closing))
         self.sync_action.setEnabled(self.sync_button.isEnabled())
-        active = sum(1 for t in self.sessions if t.state.busy)
+        active = sum(int(state.busy) + len(state.downloads) for state in self.sessions.values())
         count = sum(1 for t in self.sessions if t.state.connected)
         summary = status_label(count, active)
         self.connection_badge.setText(summary)

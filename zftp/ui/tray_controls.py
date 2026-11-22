@@ -164,7 +164,7 @@ class TrayControlsMixin:
         for job in running:
             tab = next((tab for tab in self.sessions if str(id(tab)) == job.session_id), None)
             if tab:
-                tab.state.cancelled = True
+                tab.state.cancel_transfer(job.id)
         self.statusBar().showMessage('Cancellation requested; waiting for active operations to stop safely…')
     def update_from_tray(self):
         if self._quit_requested:

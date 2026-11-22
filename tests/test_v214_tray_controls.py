@@ -65,7 +65,7 @@ class TrayControlsTests(unittest.TestCase):
             body = method_text(method)
             self.assertIn('QMessageBox.question(', body)
             self.assertIn('QMessageBox.No', body)
-        self.assertIn('tab.state.cancelled = True',
+        self.assertIn('tab.state.cancel_transfer(job.id)',
                       method_text('tray_cancel_active'))
 
     def test_background_mode_does_not_close_network_sessions(self):

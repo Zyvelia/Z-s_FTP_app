@@ -1,11 +1,13 @@
 """TransfersViewMixin: isolated Z FTP UI behavior, attached to the same main window."""
 from __future__ import annotations
 
+import ftplib
 import sys
 import os
 import time
 import posixpath
 from pathlib import Path
+from threading import Event
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor
 from zftp.services.directory_performance import scan_directory, batches, RenderGate, UpdateThrottle
@@ -22,7 +24,7 @@ from zftp.protocols.sftp_engine import SFTPBackend, UntrustedHostKey
 from zftp.services.profiles import ProfileStore
 from zftp.ui.profile_dialog import ProfileDialog
 from zftp.services.sessions import ConnectionSession
-from zftp.transfers.transfer_queue import TransferQueue, Transfer
+from zftp.transfers.transfer_queue import DOWNLOADS, TransferQueue, Transfer
 from zftp.ui.transfer_tables import TransferTable
 from zftp.transfers.reliable_transfer import TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
 from zftp.transfers.ps3_performance import benchmark_ftp_upload, PRESETS
@@ -42,6 +44,10 @@ from zftp.services.sync_engine import (Inventory, Change, inventory_local, inven
 
 from zftp.ui.ui_workers import Job, Events
 from zftp.ui.remote_tab import RemoteTab
+
+
+class DownloadConnectionError(RuntimeError):
+    """The extra connection failed before transferring data."""
 
 
 class TransfersViewMixin:
@@ -289,17 +295,30 @@ class TransfersViewMixin:
     def render_queue(self):
         current = self.queue.jobs
         running = next((job for job in current if job.status == 'Running'), None)
-        if running:
-            phase = getattr(running, 'phase', 'Uploading')
-            stages = ('Uploading', 'Verifying', 'Renaming', 'Completed') if running.direction == 'upload' else ('Downloading', 'Verifying', 'Finalizing', 'Completed')
-            current_idx = stages.index(phase) if phase in stages else 0
-            self.stage_ribbon.setText('   ›   '.join(
-                ('✓ ' if i < current_idx else ('● ' if i == current_idx else '○ ')) + stage
-                for i, stage in enumerate(stages)))
-        elif current and current[-1].status == 'Completed':
-            self.stage_ribbon.setText('✓ Uploading   ›   ✓ Verifying   ›   ✓ Renaming   ›   ✓ Completed')
+        featured = running
+        if featured is None and current and current[-1].status == 'Completed':
+            featured = current[-1]
+        if featured is None:
+            self.stage_ribbon.setText('No active transfers')
         else:
-            self.stage_ribbon.setText('○ Uploading   ›   ○ Verifying   ›   ○ Renaming   ›   ○ Completed')
+            if featured.direction == 'upload':
+                stages = ['Uploading', 'Renaming']
+            elif featured.direction == 'download':
+                stages = ['Downloading', 'Finalizing']
+            else:
+                stages = ['Downloading' if featured.children else 'Processing']
+            if featured.verify_sha256 and featured.direction in ('upload', 'download'):
+                stages.insert(1, 'Verifying')
+            stages.append('Completed')
+            if featured.status == 'Completed':
+                labels = ['✓ ' + stage for stage in stages]
+            else:
+                current_idx = stages.index(featured.phase) if featured.phase in stages else 0
+                labels = [
+                    ('✓ ' if i < current_idx else '● ' if i == current_idx else '○ ') + stage
+                    for i, stage in enumerate(stages)
+                ]
+            self.stage_ribbon.setText('   ›   '.join(labels))
         self.queue_table.setRowCount(len(current))
         for row, item in enumerate(current):
             tab = next((t for t in self.sessions if str(id(t)) == item.session_id), None)
@@ -368,7 +387,7 @@ class TransfersViewMixin:
             if tab: self.record_transfer(job, tab.state)
         if job.status == 'Running':
             tab = next((t for t in self.sessions if str(id(t)) == job.session_id), None)
-            if tab: tab.state.cancelled = True
+            if tab: tab.state.cancel_transfer(job.id)
         self.render_queue()
     def clear_finished_jobs(self):
         self.queue.clear_finished()
@@ -437,24 +456,36 @@ class TransfersViewMixin:
             done, transfer=True)
     def pump_queue(self, tab):
         state = self.sessions.get(tab)
-        if not state or not state.connected or state.busy or state.closing: return
+        if not state or not state.connected or state.busy or state.closing or self._quit_requested: return
         sid = str(id(tab))
-        item = self.queue.next_for(sid)
+        make_connection = getattr(tab, 'make_download_connection', None)
+        parallel = state.parallel_downloads and make_connection is not None
+        item = self.queue.next_for(sid, download_limit=2 if parallel else 1)
         if item is None: return
+        item.verify_sha256 = self.verify_checksums.isChecked()
+        background = parallel and item.direction in DOWNLOADS
+        cancellation = Event() if background else None
+        if background:
+            backend, reconnect = make_connection()
+            cancelled = cancellation.is_set
+        else:
+            backend = state.backend
+            reconnect = lambda: tab.reconnect_fn()
+            cancelled = lambda: state.cancelled
         self.render_queue()
 
         settings = TransferSettings(self.bandwidth_limit.value(),
                                     self.retry_limit.value(), self.backoff_delay.value(),
                                     self.chunk_select.currentData())
         item.attempts = 1
-        verify_checksums = self.verify_checksums.isChecked()
         item.speed_bps = 0.
         item.eta_seconds = None
         self.transfer_metrics.pop(item.id, None)
 
+        verify_sha256 = item.verify_sha256
+
         def perform(item, progress):
-            backend = state.backend
-            verify_enabled = verify_checksums and item.direction in ('upload', 'download')
+            verify_enabled = verify_sha256 and item.direction in ('upload', 'download')
             if item.direction == 'mkdir_local':
                 dest = Path(item.destination)
                 if dest.is_symlink() or dest.is_file(): raise FileExistsError(dest)
@@ -465,7 +496,7 @@ class TransfersViewMixin:
                 verified_digest[0] = None
                 # Only this worker owns the connection. Never reuse the FTP
                 # control channel concurrently with other jobs on this tab.
-                old_dir = backend.pwd()
+                old_dir = None if background else backend.pwd()
                 try:
                     backend.cwd(item.remote_dir)
                     if item.direction == 'mkdir_remote':
@@ -480,42 +511,42 @@ class TransfersViewMixin:
                     if item.direction == 'upload':
                         def staged_check(partial):
                             verified_digest[0] = verify_transfer(backend, 'upload', Path(item.source),
-                                                                  partial, lambda: state.cancelled)
+                                                                  partial, cancelled)
                         return resilient_upload(backend, Path(item.source), item.destination,
-                                                progress, lambda: state.cancelled, settings,
+                                                progress, cancelled, settings,
                                                 verify_staged=staged_check if verify_enabled else None,
                                                 on_phase=lambda stage: progress('@stage:' + stage, None))
                     result = resilient_download(backend, item.source, Path(item.destination),
-                                                progress, lambda: state.cancelled, settings)
+                                                progress, cancelled, settings)
                     return result
                 finally:
-                    try: backend.cwd(old_dir)
-                    except (OSError, EOFError, RuntimeError): pass
-
-            def reconnect():
-                # An interrupted FTP data connection may desynchronize its
-                # control channel. Re-establish instead of issuing commands
-                # against an untrustworthy session.
-                tab.reconnect_fn()
+                    if old_dir is not None:
+                        try:
+                            backend.cwd(old_dir)
+                        except (OSError, EOFError, RuntimeError, ftplib.Error):
+                            pass
 
             def on_retry(attempt_no, wait, why):
                 item.attempts = attempt_no + 1
                 # Qt signal transports state change to the GUI thread.
                 progress(item.count, item.total)
 
-            result = with_retries(attempt, reconnect, settings, lambda: state.cancelled,
+            result = with_retries(attempt, reconnect, settings, cancelled,
                                   on_retry=on_retry)
             digest = verified_digest[0]
             if verify_enabled and item.direction == 'download':
                 progress('@stage:Verifying', None)
-                old_dir = backend.pwd()
+                old_dir = None if background else backend.pwd()
                 try:
                     backend.cwd(item.remote_dir)
                     digest = verify_transfer(backend, 'download', Path(item.destination), item.source,
-                                             lambda: state.cancelled)
+                                             cancelled)
                 finally:
-                    try: backend.cwd(old_dir)
-                    except (OSError, EOFError, RuntimeError): pass
+                    if old_dir is not None:
+                        try:
+                            backend.cwd(old_dir)
+                        except (OSError, EOFError, RuntimeError, ftplib.Error):
+                            pass
             progress('@stage:Finalizing', None)
             return (result, digest)
 
@@ -525,7 +556,7 @@ class TransfersViewMixin:
             root = Path(item.local_dir)
             next_update = 0.0
             for index, child in enumerate(item.children):
-                if state.cancelled:
+                if cancelled():
                     raise InterruptedError('Folder download cancelled')
                 target = Path(child.destination)
                 safe_local_target(root, target.relative_to(root).as_posix())
@@ -591,10 +622,67 @@ class TransfersViewMixin:
             self.render_queue()
             return False
 
-        # run_session_job calls the error handler before its own transfer cleanup.
-        self.run_session_job(tab, f'{"Folder download" if item.children else item.direction.title()}: {item.name}', operation,
-                             after, on_error, transfer=True,
-                             progress_callback=lambda count, total: self.on_transfer_progress(item, count, total))
+        label = f'{"Folder download" if item.children else item.direction.title()}: {item.name}'
+        if background:
+            self.start_background_download(tab, item, cancellation, backend, reconnect, operation, after)
+        else:
+            self.run_session_job(tab, label, operation, after, on_error, transfer=True,
+                                 progress_callback=lambda count, total: self.on_transfer_progress(item, count, total))
+
+    def start_background_download(self, tab, item, cancellation, backend, login, operation, after):
+        state = tab.state
+        state.downloads[item.id] = cancellation
+        tab.set_controls()
+        self.update_active()
+
+        def run(progress):
+            try:
+                if cancellation.is_set():
+                    raise InterruptedError('Download cancelled')
+                try:
+                    login()
+                except Exception as exc:
+                    raise DownloadConnectionError(str(exc)) from exc
+                return operation(progress)
+            finally:
+                try:
+                    backend.disconnect()
+                except Exception:
+                    # This connection is discarded even after an interrupted RETR.
+                    pass
+
+        job = Job(run)
+        self.jobs.append(job)
+
+        def done(result=None, error=None):
+            state.downloads.pop(item.id)
+            self.jobs.remove(job)
+            if error is None:
+                after(result)
+            elif isinstance(error, DownloadConnectionError) and not cancellation.is_set() and not self._quit_requested:
+                first_failure = state.parallel_downloads
+                state.parallel_downloads = False
+                item.status = item.phase = 'Queued'
+                if first_failure:
+                    self.log(f'{state.host} · Extra download connection unavailable. Retrying one at a time. {error}')
+            else:
+                if cancellation.is_set() and isinstance(error, DownloadConnectionError):
+                    error = InterruptedError('Download cancelled')
+                self.queue.finish(item, error)
+                self.record_transfer(item, state)
+                if item.status == 'Failed':
+                    self.notify('error', 'Download failed', f'{state.host} · {item.name} · {error}')
+            tab.set_controls()
+            self.update_active()
+            self.render_queue()
+            QTimer.singleShot(0, lambda: self.pump_queue(tab))
+
+        job.events.progress.connect(lambda count, total: self.on_transfer_progress(item, count, total))
+        job.events.done.connect(done)
+        job.events.failed.connect(lambda error: done(error=error))
+        self.download_pool.start(job)
+        QTimer.singleShot(0, lambda: self.pump_queue(tab))
+
     def on_transfer_progress(self, item, count, total):
         if isinstance(count, str) and count.startswith('@stage:'):
             item.phase = count[7:]

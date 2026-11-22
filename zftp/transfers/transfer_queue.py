@@ -1,9 +1,11 @@
-"""Qt-free transfer queue; one active job per server, independent servers concurrent."""
+"""Qt-free transfer queue; bounded parallel downloads and ordered writes."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from pathlib import Path
+import posixpath
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+DOWNLOADS = frozenset({'download', 'download_folder'})
 TERMINAL = frozenset({'Completed', 'Failed', 'Cancelled'})
 
 @dataclass
@@ -25,6 +27,7 @@ class Transfer:
     eta_seconds: float | None = None
     children: tuple[Transfer, ...] = ()
     skipped: int = 0
+    verify_sha256: bool = False
 
     @property
     def name(self):
@@ -54,15 +57,57 @@ class TransferQueue:
         self.jobs.append(transfer)
         return transfer
 
-    def next_for(self, session_id: str):
-        if any(j.session_id == session_id and j.status == 'Running' for j in self.jobs):
+    def next_for(self, session_id: str, *, download_limit=1):
+        running = [j for j in self.jobs if j.session_id == session_id and j.status == 'Running']
+        pending = next((j for j in self.jobs if j.session_id == session_id and j.status == 'Queued'), None)
+        if pending is None:
             return None
+        if running and (len(running) >= download_limit or pending.direction not in DOWNLOADS
+                        or any(j.direction not in DOWNLOADS for j in running)):
+            return None
+        pending.status = 'Running'
+        pending.phase = ('Uploading' if pending.direction == 'upload' else
+                         'Downloading' if pending.direction in DOWNLOADS else 'Processing')
+        return pending
+
+    def active_parts(self):
         for job in self.jobs:
-            if job.session_id == session_id and job.status == 'Queued':
-                job.status = 'Running'
-                job.phase = 'Uploading' if job.direction == 'upload' else ('Downloading' if job.direction in ('download', 'download_folder') else 'Processing')
-                return job
-        return None
+            if job.status not in TERMINAL:
+                yield job
+                yield from job.children
+
+    def protects_remote_path(self, session_ids, directory, name):
+        def remote_path(folder, basename):
+            path = posixpath.normpath(posixpath.join(folder, basename)).casefold()
+            return PurePosixPath('/' + path.lstrip('/'))
+
+        selected = remote_path(directory, name)
+        for item in self.active_parts():
+            if item.session_id not in session_ids:
+                continue
+            if item.direction in DOWNLOADS or item.direction in ('upload', 'mkdir_remote'):
+                filename = item.source if item.direction in DOWNLOADS else item.destination
+                target = remote_path(item.remote_dir, filename)
+                if target.is_relative_to(selected):
+                    return True
+                if item.direction == 'upload' and target.with_name(target.name + '.zftp.part') == selected:
+                    return True
+        return False
+
+    def protects_local_path(self, path):
+        selected = path.resolve()
+        for item in self.active_parts():
+            if item.direction == 'upload':
+                target = Path(item.source).resolve()
+            elif item.direction in DOWNLOADS or item.direction == 'mkdir_local':
+                target = Path(item.destination).resolve()
+                if item.direction == 'download' and target.with_name(target.name + '.zftp.part') == selected:
+                    return True
+            else:
+                continue
+            if target.is_relative_to(selected):
+                return True
+        return False
 
     def cancel(self, transfer_id: str):
         job = next((j for j in self.jobs if j.id == transfer_id), None)

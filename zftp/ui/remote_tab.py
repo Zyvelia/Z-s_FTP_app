@@ -122,11 +122,15 @@ class RemoteTab(QWidget):
             button.setEnabled(active)
         self.back.setEnabled(active and self.nav_index > 0)
         self.forward.setEnabled(active and self.nav_index + 1 < len(self.nav_history))
-        self.disconnect.setEnabled(not self.state.busy and not self.state.closing)
+        for button in (self.rename_btn, self.edit_btn, self.permissions_btn):
+            button.setEnabled(active and not self.state.downloads)
+        self.disconnect.setEnabled(not self.state.active and not self.state.closing)
         self.more_actions.setEnabled(active)
         for button in (self.mkdir, self.rename_btn, self.edit_btn, self.search_btn, self.permissions_btn, self.delete):
             button.changed_state_action.setEnabled(active)
-        self.cancel.setEnabled(self.state.busy and self.cancel.property('transfer_active') is True)
+        self.cancel.setText('Cancel downloads' if self.state.downloads else 'Cancel transfer')
+        self.cancel.setEnabled(bool(self.state.downloads) or
+                               (self.state.busy and self.cancel.property('transfer_active') is True))
 
     def show_entries(self):
         self.path_label.setText('Remote: ' + self.state.remote_path)

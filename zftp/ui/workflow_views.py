@@ -54,6 +54,7 @@ class WorkflowViewsMixin:
         transfer.status = 'Running'
         transfer.attempts = 1
         settings = TransferSettings(self.bandwidth_limit.value(), 0, 0)
+        verify_sha256 = self.verify_checksums.isChecked()
         def run(progress):
             def emit(phase, done, total):
                 # Preserve source/destination phase in progress signal.
@@ -62,7 +63,7 @@ class WorkflowViewsMixin:
                              source_name=step['source_name'], destination_dir=step['destination_dir'],
                              destination_name=step['destination_name'], settings=settings,
                              cancelled=lambda: src.cancelled or dst.cancelled, progress=emit,
-                             verify=True)
+                             verify=verify_sha256)
         job = Job(run); self.jobs.append(job)
         def report(data, total):
             phase, count = data
