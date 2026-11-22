@@ -1,6 +1,6 @@
 # Z FTP
 
-Z FTP is a Windows file transfer client and optional server for FTP, FTPS, and SFTP. Use it with a NAS, a Linux server, another computer, or a PS3 running an FTP server.
+Z FTP is a Windows file transfer client and optional server for FTP, FTPS, and SFTP. It can also manage a writable NFSv3 share through WinNFSd. Use it with a NAS, a Linux server, another computer, or a PS3 running an FTP server.
 
 ## Getting started
 
@@ -9,6 +9,15 @@ Z FTP is a Windows file transfer client and optional server for FTP, FTPS, and S
 3. Use the local and remote file panes to drag files into the transfer queue.
 
 Saved connections, independent server tabs, resumable transfers, SHA-256 verification, sync previews, transfer history, and manual workflows are included. The **PS3 Wi-Fi preset** and **Benchmark PS3** are optional tools under **Client → Transfers → Settings**.
+
+## Share a Windows folder with a PS4 over NFS
+
+1. Download `WinNFSd.exe` from the [official WinNFSd releases](https://github.com/winnfsd/winnfsd/releases).
+2. In **NFS Server**, select the executable, a dedicated destination folder on a local drive, and the PC address on the same LAN as the PS4. Click **Start writable share**.
+3. Copy the `nfs://<PC-IP>/ps4` URL into the NFS share setting on the PS4. In [Itemzflow](https://github.com/LightningMods/Itemzflow#nfs-share-format), enter it under **Settings → Fuse NFS IP**, then set **Dumper Path** to `/hostapp`.
+4. When the dump finishes, stop sharing from Z FTP.
+
+WinNFSd uses TCP and UDP ports 111, 1058, and 2049. If Windows Firewall blocks the connection, allow WinNFSd on the private network, scoped to your PS4 where possible. WinNFSd shares are writable and have no password.
 
 ## Updating an installed copy
 

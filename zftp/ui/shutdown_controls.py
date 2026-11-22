@@ -104,9 +104,10 @@ class ShutdownControlsMixin:
                 and self.hide_to_tray()):
             event.ignore()
             return
-        if self.server_panel.active_or_stopping or self.sftp_server_panel.active_or_stopping:
+        if (self.server_panel.active_or_stopping or self.sftp_server_panel.active_or_stopping
+                or self.nfs_server_panel.active_or_stopping):
             QMessageBox.information(self, 'Server running',
-                                    'Stop the built-in server before quitting Z FTP.')
+                                    'Stop any active servers before quitting Z FTP.')
             self._tray_force_quit = False
             self._pending_updater = None
             event.ignore()
