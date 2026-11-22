@@ -8,6 +8,14 @@ from uuid import uuid4
 DOWNLOADS = frozenset({'download', 'download_folder'})
 TERMINAL = frozenset({'Completed', 'Failed', 'Cancelled'})
 
+@dataclass(frozen=True)
+class FolderProgress:
+    items_done: int
+    bytes_done: int
+    bytes_total: int | None
+    status: str
+
+
 @dataclass
 class Transfer:
     session_id: str
@@ -28,6 +36,7 @@ class Transfer:
     children: tuple[Transfer, ...] = ()
     skipped: int = 0
     verify_sha256: bool = False
+    folder_progress: FolderProgress | None = None
 
     @property
     def name(self):

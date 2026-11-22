@@ -36,6 +36,22 @@ def validate_name(name: str) -> str:
     return name
 
 
+def decode_text_preview(data: bytes) -> str:
+    """Display common Windows and UTF-8 text files without modifying their bytes."""
+    if data.startswith((b'\xff\xfe', b'\xfe\xff')):
+        text = data.decode('utf-16')
+    else:
+        if b'\x00' in data:
+            raise ValueError('This file contains binary data')
+        try:
+            text = data.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            text = data.decode('cp1252', errors='replace')
+    if '\x00' in text:
+        raise ValueError('This file contains binary data')
+    return text
+
+
 def read_editor_snapshot(backend, name: str, limit: int = MAX_EDITOR_BYTES) -> EditorSnapshot:
     name = validate_name(name)
     raw = backend.read_bytes(name, limit)
@@ -103,6 +119,87 @@ def safe_save_remote_bytes(backend, name: str, expected_sha256: str, payload: by
         raise
     # Backup deliberately kept until user manually removes it.
     return backup
+
+
+class RemoteDirectoryRestoreError(RuntimeError):
+    """The browser connection can no longer be used from its previous path."""
+
+
+def delete_remote_tree(backend, name, *, cancelled=lambda: False):
+    """Remove a selected tree in post-order, treating links as leaf entries."""
+    name = validate_name(name)
+    initial = backend.pwd()
+    parent = posixpath.normpath(backend.canonical_directory())
+    if not parent.startswith('/'):
+        raise ValueError('Server did not report an absolute remote directory')
+    root = posixpath.join(parent, name)
+    current = parent
+    planned = []
+    stack = [(root, False)]
+    visited_paths = set()
+    removed = 0
+    target = root
+
+    def enter(folder):
+        nonlocal current
+        if current != folder:
+            backend.cwd(folder)
+            if posixpath.normpath(backend.canonical_directory()) != folder:
+                raise ValueError(f'Server resolved {folder} to another location')
+            current = folder
+
+    def check_cancelled():
+        if cancelled():
+            raise InterruptedError(f'Folder deletion cancelled after removing {removed} items')
+
+    try:
+        # Recheck the selected directory with a listing that distinguishes links.
+        listing = backend.list_dir_for_deletion
+        selected = [entry for entry in listing() if entry.name == name]
+        if len(selected) != 1 or not selected[0].is_dir or selected[0].is_link:
+            raise ValueError('Selected item is no longer a regular directory')
+        # Validate the entire listing before sending the first delete command.
+        while stack:
+            check_cancelled()
+            target, scanned = stack.pop()
+            if scanned:
+                planned.append((target, True))
+                continue
+            if target in visited_paths:
+                raise ValueError(f'Server listed the same directory more than once: {target}')
+            visited_paths.add(target)
+            enter(target)
+            stack.append((target, True))
+            for entry in listing():
+                child = posixpath.join(target, validate_name(entry.name))
+                if entry.is_dir and not entry.is_link:
+                    stack.append((child, False))
+                else:
+                    planned.append((child, False))
+
+        for target, is_dir in planned:
+            check_cancelled()
+            folder, filename = posixpath.split(target)
+            enter(folder)
+            if is_dir:
+                backend.remove_empty_dir(filename)
+            else:
+                backend.delete_file(filename)
+            removed += 1
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f'Could not delete {root}. Stopped at {target} after removing {removed} items. {exc}') from exc
+    finally:
+        try:
+            backend.cwd(initial)
+            if posixpath.normpath(backend.canonical_directory()) != parent:
+                raise ValueError('Server returned a different directory')
+        except Exception as exc:
+            raise RemoteDirectoryRestoreError(
+                f'Could not return to {initial} after removing {removed} items. Reconnect and check {root}.'
+            ) from exc
+    return removed
 
 
 def find_remote(backend, root: str, term: str, *, cancelled=lambda: False,

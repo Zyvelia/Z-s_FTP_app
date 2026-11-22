@@ -3,8 +3,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from zftp.protocols.ftp_engine import FTPBackend
-from zftp.services.remote_management import (RemoteConflictError, find_remote, read_editor_snapshot,
+from zftp.protocols.ftp_engine import FTPBackend, RemoteEntry
+from zftp.services.remote_management import (RemoteConflictError, decode_text_preview, delete_remote_tree,
+                               find_remote, read_editor_snapshot,
                                safe_save_editor, encode_editor_text, validate_name)
 
 
@@ -102,6 +103,48 @@ class RemoteManagementTests(unittest.TestCase):
         self.assertEqual(b.pwd(), '/home')
         with self.assertRaises(ValueError): find_remote(b, '/home', 'x', max_entries=1)
         self.assertEqual(b.pwd(), '/home')
+
+    def test_recursive_delete_unlinks_links_and_removes_parents_last(self):
+        backend = MagicMock()
+        current = ['/home']
+        backend.cwd.side_effect = lambda folder: current.__setitem__(0, folder)
+        backend.pwd.side_effect = backend.canonical_directory.side_effect = lambda: current[0]
+        listing = {
+            '/home': [RemoteEntry('game', True)],
+            '/home/game': [RemoteEntry('large folder', True), RemoteEntry('link', True, is_link=True)],
+            '/home/game/large folder': [RemoteEntry('note.txt', False)],
+        }
+        backend.list_dir_for_deletion.side_effect = lambda: listing[current[0]]
+        removed = []
+        backend.delete_file.side_effect = lambda name: removed.append((current[0], name))
+        backend.remove_empty_dir.side_effect = backend.delete_file.side_effect
+
+        self.assertEqual(delete_remote_tree(backend, 'game'), 4)
+        self.assertEqual(removed, [
+            ('/home/game', 'link'),
+            ('/home/game/large folder', 'note.txt'),
+            ('/home/game', 'large folder'),
+            ('/home', 'game'),
+        ])
+        self.assertEqual(current[0], '/home')
+
+        listing['/home/game/large folder'] = [RemoteEntry('../outside.txt', False)]
+        removed.clear()
+        with self.assertRaisesRegex(RuntimeError, 'after removing 0 items'):
+            delete_remote_tree(backend, 'game')
+        self.assertEqual(removed, [])
+        self.assertEqual(current[0], '/home')
+        listing['/home'] = [RemoteEntry('game', True, is_link=True)]
+        with self.assertRaisesRegex(RuntimeError, 'no longer a regular directory'):
+            delete_remote_tree(backend, 'game')
+        self.assertEqual(removed, [])
+
+    def test_text_preview_opens_common_windows_encodings(self):
+        for encoding in ('utf-8', 'utf-8-sig', 'utf-16', 'cp1252'):
+            with self.subTest(encoding=encoding):
+                self.assertEqual(decode_text_preview('café'.encode(encoding)), 'café')
+        with self.assertRaisesRegex(ValueError, 'binary'):
+            decode_text_preview(b'bin\x00data')
 
     def test_ftp_management_calls(self):
         b = FTPBackend()

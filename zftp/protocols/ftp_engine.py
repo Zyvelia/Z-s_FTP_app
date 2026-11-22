@@ -92,6 +92,9 @@ class FTPBackend:
         self._last_remote_path = path
         return path
 
+    def canonical_directory(self):
+        return self.pwd()
+
     def cwd(self, path: str):
         result = self._ftp().cwd(path)
         self._last_remote_path = self._ftp().pwd()
@@ -144,18 +147,31 @@ class FTPBackend:
             return sorted(entries, key=lambda x: (not x.is_dir, x.name.casefold()))
         except (ftplib.error_perm, ftplib.error_reply, AttributeError):
             self._mlsd_supported = False
-            lines = []
-            ftp.retrlines('LIST', lines.append)
-            entries = []
-            for line in lines:
-                parts = line.split(maxsplit=8)
-                if len(parts) >= 9 and parts[0][0] in ('d', '-', 'l'):
-                    name = parts[8]
-                    if name not in ('.', '..'):
-                        size = int(parts[4]) if parts[4].isdigit() else None
-                        entries.append(RemoteEntry(name, parts[0][0] == 'd', size, parts[0][0] == 'l'))
-                # LIST syntax varies by platform; entries not safely parseable are skipped.
-            return sorted(entries, key=lambda x: (not x.is_dir, x.name.casefold()))
+            return self._list_unix_dir()
+
+    def list_dir_for_deletion(self):
+        # Some FTP servers report symlinks to folders as ordinary dirs in MLSD.
+        return self._list_unix_dir(strict=True)
+
+    def _list_unix_dir(self, *, strict=False):
+        lines = []
+        self._ftp().retrlines('LIST', lines.append)
+        entries = []
+        for line in lines:
+            if not line.strip() or line.strip().lower().startswith('total '):
+                continue
+            parts = line.split(maxsplit=8)
+            if len(parts) < 9 or parts[0][0] not in ('d', '-', 'l'):
+                if strict:
+                    raise ValueError('FTP server did not return an identifiable file or directory in LIST')
+                continue
+            name = parts[8]
+            if parts[0][0] == 'l':
+                name = name.partition(' -> ')[0]
+            if name not in ('.', '..'):
+                size = int(parts[4]) if parts[4].isdigit() else None
+                entries.append(RemoteEntry(name, parts[0][0] == 'd', size, parts[0][0] == 'l'))
+        return sorted(entries, key=lambda x: (not x.is_dir, x.name.casefold()))
 
     def mkdir(self, name: str):
         self._ftp().mkd(name)

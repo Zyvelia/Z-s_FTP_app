@@ -71,7 +71,7 @@ class RemoteTab(QWidget):
         self.up = QPushButton('↑ Up')
         self.refresh = QPushButton('Refresh')
         self.mkdir = QPushButton('New folder')
-        self.delete = QPushButton('Delete file')
+        self.delete = QPushButton('Delete…')
         self.download = QPushButton('↓ Download')
         self.download.setObjectName('primaryAction')
         self.rename_btn = QPushButton('Rename')

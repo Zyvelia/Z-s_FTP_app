@@ -45,7 +45,7 @@ class ETATests(unittest.TestCase):
         main = ui_text(ROOT)
         for fragment in ('def local_context_menu(', 'def remote_context_menu(',
                          'QFile.moveToTrash', 'def delete_remote_entry(',
-                         'remove_empty_dir', 'ETAEstimator()'):
+                         'delete_remote_tree', 'ETAEstimator()'):
             self.assertIn(fragment, main)
         for file in ('zftp/protocols/ftp_engine.py', 'zftp/protocols/sftp_engine.py'):
             self.assertIn('def remove_empty_dir(', (ROOT/file).read_text(encoding='utf-8'))

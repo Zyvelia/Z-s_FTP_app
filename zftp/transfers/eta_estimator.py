@@ -12,7 +12,7 @@ class ETAEstimator:
     last_time: float | None = None
 
     def update(self, count: int, total: int | None, now: float):
-        if total is None or total <= 0 or count < 0 or count > total:
+        if count < 0 or (total is not None and (total <= 0 or count > total)):
             return 0.0, None
         if self.last_time is not None and (now < self.last_time or count < self.last_count):
             self.samples.clear()  # resume/retry: old throughput is no longer representative
@@ -23,7 +23,7 @@ class ETAEstimator:
         self.last_time, self.last_count = now, count
         while len(self.samples) > 2 and self.samples[1][0] < now - self.window:
             self.samples.popleft()
-        if count >= total:
+        if total is not None and count >= total:
             return 0.0, 0.0
         # Keep a short warm-up before displaying an estimate.
         elapsed = now - self.samples[0][0]
@@ -38,7 +38,7 @@ class ETAEstimator:
             return 0., None  # stalled; don't claim an accurate completion time
         if speed <= 0:
             return 0., None
-        return speed, (total - count) / speed
+        return speed, None if total is None else (total - count) / speed
 
 
 def format_eta(seconds: float | None) -> str:

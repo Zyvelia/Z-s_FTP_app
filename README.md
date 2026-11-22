@@ -24,9 +24,9 @@ Finish your transfers, then right-click the Z FTP tray icon and choose **Check f
 
 ## Building from source
 
-On Windows, install Python 3.11 or later and run `start_windows.bat`. Use `python verify_release.py` for the regression suite. Run `build_exe.bat` to build the app or `build_all.bat` to build the app and installer with Inno Setup 6.
+On Windows, install Python 3.11 or later and run `start_windows.bat`. Use `python verify_release.py` for the regression suite. Run `build_exe.bat` to build the app. To build the installer, install [Inno Setup 6](https://jrsoftware.org/isdl.php), extract the entire source ZIP, and run `build_all.bat` from the extracted folder. It shows the build result and leaves the window open so you can read any error. The installer goes in `installer_output`. For unattended builds, use `build_all.bat --no-pause`. If the compiler is in a custom location, set `ZFTP_ISCC` to the full path to `ISCC.exe`.
 
-The release workflow builds a Windows installer when a matching version tag is pushed, then attaches it to a stable GitHub Release. Update the version in the app, installer, build script, and version assertions before tagging. The installer filename must match the tag (for example, `ZFTP_Setup_v2.1.12.exe` for `v2.1.12`).
+To build without setting up the Windows tools locally, run **Windows release** from GitHub Actions and download the installer artifact from the completed run. Pushing a matching version tag builds the installer and attaches it to a stable GitHub Release. Update the version in the app, installer, build script, and version assertions before tagging. The installer filename must match the tag (for example, `ZFTP_Setup_v2.1.12.exe` for `v2.1.12`).
 
 See the [v2.1.12 changelog](docs/changelog/CHANGELOG_v2.1.12.md), [release history](docs/RELEASE_HISTORY.md), and [security notes](docs/SECURITY.md).
 

@@ -7,8 +7,8 @@ import os
 import time
 import posixpath
 from pathlib import Path
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize
-from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize, QUrl
+from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor, QDesktopServices
 from zftp.services.directory_performance import scan_directory, batches, RenderGate, UpdateThrottle
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
@@ -23,12 +23,15 @@ from zftp.protocols.sftp_engine import SFTPBackend, UntrustedHostKey
 from zftp.services.profiles import ProfileStore
 from zftp.ui.profile_dialog import ProfileDialog
 from zftp.services.sessions import ConnectionSession
-from zftp.transfers.transfer_queue import TransferQueue, Transfer
+from zftp.transfers.transfer_queue import FolderProgress, TransferQueue, Transfer
 from zftp.ui.transfer_tables import TransferTable
 from zftp.transfers.reliable_transfer import TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
 from zftp.transfers.ps3_performance import benchmark_ftp_upload, PRESETS
 from zftp.transfers.eta_estimator import ETAEstimator, format_eta
-from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
+from zftp.services.remote_management import (
+    RemoteConflictError, RemoteDirectoryRestoreError, decode_text_preview, delete_remote_tree, find_remote,
+    read_editor_snapshot, safe_save_editor, validate_name,
+)
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
 from zftp.transfers.integrity import verify_transfer
@@ -109,8 +112,14 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         if folder: self.set_local_path(Path(folder))
     def open_local(self, row, _column):
         item = self.local_table.item(row, 0)
-        if item and (self.local_path / item.text()).is_dir():
-            self.set_local_path(self.local_path / item.text())
+        if item is None:
+            return
+        path = self.local_path / item.text()
+        if path.is_dir():
+            self.set_local_path(path)
+        elif path.suffix.lower() == '.txt' and path.is_file():
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                QMessageBox.warning(self, 'Could not open text file', str(path))
     def selected_local(self):
         row = self.local_table.currentRow()
         item = self.local_table.item(row, 0) if row >= 0 else None
@@ -148,8 +157,6 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         if picked == open_action:
             if path.is_dir(): self.set_local_path(path)
             else:
-                from PySide6.QtGui import QDesktopServices
-                from PySide6.QtCore import QUrl
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         elif picked == upload_action: self.upload()
         elif picked == rename_action: self.rename_local(path)
@@ -214,7 +221,7 @@ class FileBrowserMixin(Ps3FileToolsMixin):
             edit_label = 'View / edit PARAM.SFO…' if entry.name.lower().endswith('.sfo') else 'Edit text…'
             edit_action = menu.addAction(edit_label) if not entry.is_dir else None
             permissions_action = menu.addAction('Permissions…')
-            delete_action = menu.addAction('Delete empty folder…' if entry.is_dir else 'Delete permanently…')
+            delete_action = menu.addAction('Delete folder and contents…' if entry.is_dir else 'Delete permanently…')
             if state.downloads:
                 for action in (rename_action, edit_action, permissions_action):
                     if action:
@@ -337,6 +344,14 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         if transfer:
             def report(count, total):
                 if tab not in self.sessions or state.generation != token: return
+                if isinstance(count, FolderProgress):
+                    if progress_callback:
+                        progress_callback(count, total)
+                    tab.status.setText(count.status)
+                    if count.bytes_total:
+                        tab.progress.setRange(0, 100)
+                        tab.progress.setValue(min(100, (100 * count.bytes_done) // count.bytes_total))
+                    return
                 if isinstance(count, str) and count.startswith('@stage:'):
                     if progress_callback: progress_callback(count, total)
                     tab.status.setText(count[7:] + '…')
@@ -376,10 +391,57 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         self.pool.start(job)
         return True
     def open_remote(self, tab, row):
-        if tab not in self.sessions: return
-        entries = tab.state.entries
-        if 0 <= row < len(entries) and entries[row].is_dir:
-            self.navigate(tab, entries[row].name)
+        state = self.sessions.get(tab)
+        if not state or not state.connected or state.busy or state.closing:
+            return
+        if not 0 <= row < len(state.entries):
+            return
+        entry = state.entries[row]
+        if entry.is_dir:
+            self.navigate(tab, entry.name)
+        elif not entry.is_link and entry.name.lower().endswith('.txt'):
+            self.preview_remote_text(tab, entry)
+
+    def preview_remote_text(self, tab, entry):
+        state = self.sessions[tab]
+        if entry.size is not None and entry.size > MAX_EDITOR_BYTES:
+            QMessageBox.information(self, 'Text file too large', 'Download the file to open it. The preview limit is 1 MiB.')
+            return
+        try:
+            name = validate_name(entry.name)
+        except ValueError as error:
+            QMessageBox.warning(self, 'Invalid text filename', str(error))
+            return
+        folder = state.remote_path
+
+        def read(_):
+            state.backend.cwd(folder)
+            try:
+                data = state.backend.read_bytes(name, MAX_EDITOR_BYTES)
+            except ValueError:
+                # An FTP read aborted at the size limit can leave pending control replies.
+                if state.protocol in ('FTP', 'FTPS'):
+                    state.connected = False
+                raise
+            return decode_text_preview(data)
+
+        def opened(text):
+            dialog = QDialog(self)
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.setWindowTitle(name)
+            dialog.resize(720, 500)
+            layout = QVBoxLayout(dialog)
+            viewer = QPlainTextEdit()
+            viewer.setReadOnly(True)
+            viewer.setPlainText(text)
+            layout.addWidget(viewer)
+            close = QPushButton('Close')
+            close.clicked.connect(dialog.close)
+            layout.addWidget(close, alignment=Qt.AlignRight)
+            dialog.show()
+
+        self.run_session_job(tab, f'Opening {name}', read, opened)
+
     def navigate_history(self, tab, delta):
         index = tab.nav_index + delta
         if not (0 <= index < len(tab.nav_history)):
@@ -433,16 +495,16 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         tab.state.entries = entries
         tab.show_entries()
     def delete(self, tab):
-        self.delete_remote_entry(tab, files_only=True)
+        self.delete_remote_entry(tab)
 
-    def delete_remote_entry(self, tab, *, files_only=False):
-        """Delete regular files and, from the context menu, empty directories."""
+    def delete_remote_entry(self, tab):
+        """Confirm permanent removal of the selected remote item."""
         state = self.sessions.get(tab)
         if not state or not state.connected or state.busy or state.closing:
             return
         entry = tab.selected()
-        if entry is None or (files_only and entry.is_dir):
-            QMessageBox.information(self, 'Select a file', 'Select a remote file.')
+        if entry is None:
+            QMessageBox.information(self, 'Select an item', 'Select a remote file or folder.')
             return
         if entry.is_link:
             return
@@ -465,25 +527,37 @@ class FileBrowserMixin(Ps3FileToolsMixin):
 
         if blocked():
             return
-        prompt = (f'Delete EMPTY remote folder permanently?\n\n{name}\n\n'
-                  'Only an empty directory can be removed.' if entry.is_dir else
-                  f'Permanently delete remote file?\n\n{name}\n\n'
-                  'The remote server may not have a Recycle Bin.')
+        path = posixpath.join(directory, name)
+        prompt = (f'Permanently delete this remote folder and everything inside it?\n\n{path}'
+                  if entry.is_dir else
+                  f'Permanently delete this remote file?\n\n{path}')
         if QMessageBox.question(self, 'Confirm remote deletion', prompt,
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         if state.remote_path != directory or blocked():
             return
 
+        tab.directory_cache.invalidate()
+
         def action(_):
+            state.backend.cwd(directory)
             if entry.is_dir:
-                state.backend.remove_empty_dir(name)
+                delete_remote_tree(state.backend, name, cancelled=lambda: state.cancelled)
             else:
                 state.backend.delete_file(name)
             return state.backend.list_dir()
 
-        self.run_session_job(tab, 'Deleting remote item', action,
-                             lambda entries: self._replace_entries(tab, entries))
+        def failed(error):
+            if isinstance(error, RemoteDirectoryRestoreError):
+                state.connected = False
+                tab.set_controls()
+            elif not self._quit_requested:
+                QTimer.singleShot(0, lambda: self.refresh(tab))
+            return self._quit_requested and isinstance(error, InterruptedError)
+
+        label = 'Deleting remote folder' if entry.is_dir else 'Deleting remote file'
+        self.run_session_job(tab, label, action,
+                             lambda entries: self._replace_entries(tab, entries), failed)
 
     def rename_remote(self, tab):
         state = self.sessions.get(tab)

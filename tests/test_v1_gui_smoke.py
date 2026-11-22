@@ -13,14 +13,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
     from PySide6.QtCore import QUrl
     from PySide6.QtTest import QSignalSpy, QTest
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QPlainTextEdit
     from zftp.ui.main_window import MainWindow
     from zftp.protocols.ftp_engine import RemoteEntry
     from zftp.services.sessions import ConnectionSession
     from zftp.ui.remote_tab import RemoteTab
     from zftp.services.transfer_history import TransferHistory
     from zftp.services.workflows import WorkflowStore
-    from zftp.transfers.transfer_queue import Transfer
+    from zftp.transfers.transfer_queue import FolderProgress, Transfer
 except ImportError:
     QApplication = None
     MainWindow = None
@@ -233,6 +233,45 @@ class GUIv1SmokeTests(unittest.TestCase):
             self.assertFalse((root / 'a.bin').exists())
             for backend in downloads:
                 backend.disconnect.assert_called_once()
+
+    def test_remote_txt_double_click_shows_read_only_plain_text(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        backend = Mock()
+        backend.read_bytes.return_value = '<html>café</html>'.encode('utf-16')
+        state = ConnectionSession(backend, 'FTP', 'localhost', 21, 'test', connected=True)
+        state.entries = [RemoteEntry('Readme.TXT', False, 32)]
+        tab = RemoteTab(state, window)
+        window.sessions[tab] = state
+        self.addCleanup(window.sessions.clear)
+        with patch.object(window, 'run_session_job') as start:
+            window.open_remote(tab, 0)
+        _, _, read, show = start.call_args.args
+        show(read(None))
+        dialog = next(d for d in window.findChildren(QDialog) if d.windowTitle() == 'Readme.TXT')
+        self.addCleanup(dialog.close)
+        text = dialog.findChild(QPlainTextEdit)
+        self.assertTrue(text.isReadOnly())
+        self.assertEqual(text.toPlainText(), '<html>café</html>')
+
+    def test_folder_eta_and_bar_update_before_any_file_finishes(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        child = Transfer('test', 'download', 'file.bin', 'file.bin', '/', '.', total=4096)
+        folder = Transfer('test', 'download_folder', 'game', '.', '/', '.', children=(child,), total=1)
+        window.queue.add(folder)
+        window.queue.next_for('test')
+        with patch('zftp.ui.transfers_view.time.monotonic', side_effect=[10.0, 12.0]):
+            window.on_transfer_progress(folder, FolderProgress(0, 0, 4096, '1/1'), None)
+            window.on_transfer_progress(folder, FolderProgress(0, 1024, 4096, '1/1'), None)
+        self.assertEqual(folder.count, 0)
+        self.assertEqual(folder.speed_bps, 512)
+        self.assertEqual(folder.eta_seconds, 6)
+        window.render_queue()
+        self.assertEqual(window.queue_table.item(0, 5).text(), '00:06')
+        window.on_transfer_progress(folder, FolderProgress(0, 1024, None, '1/1'), None)
+        window.render_queue()
+        self.assertEqual(window.queue_table.item(0, 5).text(), 'Size unknown')
 
     def test_activity_combines_session_log_and_alerts(self):
         window = MainWindow()

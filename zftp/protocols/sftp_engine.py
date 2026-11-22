@@ -88,6 +88,9 @@ class SFTPBackend:
     def pwd(self):
         return self._cwd
 
+    def canonical_directory(self):
+        return self._sftp().normalize(self._cwd)
+
     def cwd(self, path: str):
         dest = path if path.startswith('/') else posixpath.join(self._cwd, path)
         dest = posixpath.normpath(dest)
@@ -106,6 +109,8 @@ class SFTPBackend:
             is_dir = statlib.S_ISDIR(item.st_mode)
             entries.append(RemoteEntry(item.filename, is_dir, None if is_dir else item.st_size, statlib.S_ISLNK(item.st_mode)))
         return sorted(entries, key=lambda item: (not item.is_dir, item.name.casefold()))
+
+    list_dir_for_deletion = list_dir
 
     def _path(self, name: str) -> str:
         return posixpath.join(self._cwd, clean_remote_name(name))

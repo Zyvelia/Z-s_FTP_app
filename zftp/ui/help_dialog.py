@@ -19,9 +19,9 @@ TOPICS = (
         ('SFTP keys', 'The SSH key field can point to your private key file. Verify a server’s host fingerprint before trusting it.'),
     )),
     ('File browser & uploads', (
-        ('Local and remote', 'The left pane shows your PC. The right tabs show connected servers. Double-click a folder to open it. Use Up, Back, Forward, or Refresh to navigate.'),
+        ('Local and remote', 'The left pane shows your PC. The right tabs show connected servers. Double-click a folder to open it. Double-click a .txt file to read it. Use Up, Back, Forward, or Refresh to navigate.'),
         ('Upload', 'Select local files and click Upload, or drag them onto a Remote tab. Check the remote path first because that is the upload destination.'),
-        ('File actions', 'Right-click a file or open File actions to rename it, edit supported text, change permissions, or delete it. Remote deletion is permanent.'),
+        ('File actions', 'Right-click a file or open File actions to rename it, edit supported text, change permissions, or delete it. Remote deletion is permanent. Deleting a folder removes its files and subfolders after confirmation.'),
     )),
     ('Queue & verification', (
         ('Transfers', 'The queue shows running and pending jobs, progress, and errors. Two downloads can run per server tab when supported. You can browse and delete unrelated items during a download. Select a queue row to cancel only that job, or use Clear finished to remove completed rows.'),

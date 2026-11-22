@@ -24,7 +24,7 @@ from zftp.protocols.sftp_engine import SFTPBackend, UntrustedHostKey
 from zftp.services.profiles import ProfileStore
 from zftp.ui.profile_dialog import ProfileDialog
 from zftp.services.sessions import ConnectionSession
-from zftp.transfers.transfer_queue import DOWNLOADS, TransferQueue, Transfer
+from zftp.transfers.transfer_queue import DOWNLOADS, FolderProgress, TransferQueue, Transfer
 from zftp.ui.transfer_tables import TransferTable
 from zftp.transfers.reliable_transfer import TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
 from zftp.transfers.ps3_performance import benchmark_ftp_upload, PRESETS
@@ -200,7 +200,8 @@ class TransfersViewMixin:
                     renamed = unique_name(target.name, occupied)
                     tasks.append(Transfer(sid, 'download', posixpath.basename(change.path),
                                 str(target.with_name(renamed)),
-                                posixpath.join(remote_root, posixpath.dirname(change.path)), str(target.parent)))
+                                posixpath.join(remote_root, posixpath.dirname(change.path)), str(target.parent),
+                                total=change.remote_size))
                     continue
                 relative = relpath(change.path)
                 if any(relative == b or relative.startswith(b + '/') for b in blocked): continue
@@ -216,7 +217,8 @@ class TransfersViewMixin:
                     tasks.append(Transfer(sid, 'upload', str(target), name, parent, str(target.parent)))
                 elif change.kind == 'download':
                     if target.exists() or target.is_symlink(): raise FileExistsError(target)
-                    tasks.append(Transfer(sid, 'download', name, str(target), parent, str(target.parent)))
+                    tasks.append(Transfer(sid, 'download', name, str(target), parent,
+                                          str(target.parent), total=change.remote_size))
             except (OSError, ValueError) as exc: rejected.append(f'{change.path}: {exc}')
         # Directory creation must happen before dependent transfers.
         rank = {'mkdir_local':0, 'mkdir_remote':0, 'upload':1, 'download':1}
@@ -331,10 +333,17 @@ class TransfersViewMixin:
             stage = getattr(item, 'phase', item.status)
             if item.status == 'Running' and item.total and item.count >= item.total:
                 pct = '100% sent' if item.direction == 'upload' else '100% received'
-            speed_text = f'{speed / 1024:.1f} KiB/s' if speed > 0 and stage in ('Uploading', 'Downloading') else '—'
+            folder = item.folder_progress
+            transferring = item.children or stage in ('Uploading', 'Downloading')
+            speed_text = f'{speed / 1024:.1f} KiB/s' if item.status == 'Running' and speed > 0 and transferring else '—'
             eta_text = ('—' if item.status in ('Queued', 'Completed', 'Failed', 'Cancelled')
                         else ('Checking…' if stage == 'Verifying' else
                               'Finishing…' if stage in ('Renaming', 'Finalizing') else format_eta(eta)))
+            if item.status == 'Running' and folder is not None:
+                if folder.bytes_total is None:
+                    eta_text = 'Size unknown'
+                elif folder.bytes_done >= folder.bytes_total:
+                    eta_text = 'Finishing…'
             for col, value in enumerate((host, ('Folder download' if item.children else item.direction.title()), item.name, pct,
                                          speed_text, eta_text, str(attempts),
                                          stage + (': ' + item.error if item.error else ''))):
@@ -363,7 +372,12 @@ class TransfersViewMixin:
             bar.setValue(value)
             bar.setTextVisible(True)
             if item.children:
-                bar.setFormat(f'{item.count} / {item.total} items')
+                if folder is not None and folder.bytes_total:
+                    value = min(100, int(100 * folder.bytes_done / folder.bytes_total))
+                    bar.setValue(100 if item.status == 'Completed' else value)
+                    bar.setFormat(f'%p% · {item.count}/{item.total}')
+                else:
+                    bar.setFormat(f'{item.count} / {item.total} items')
             elif item.status == 'Running' and value == 100:
                 # 100% of bytes sent is NOT the same as a completed job.
                 bar.setFormat(f'100% sent · {stage}' if item.direction == 'upload'
@@ -554,41 +568,58 @@ class TransfersViewMixin:
             if not item.children:
                 return perform(item, progress)
             root = Path(item.local_dir)
+            sizes = [child.total if child.direction == 'download' else 0 for child in item.children]
+            known_bytes = sum(size or 0 for size in sizes)
+            unknown_sizes = sizes.count(None)
+            completed_bytes = 0
             next_update = 0.0
+
+            def update_size(index, size):
+                nonlocal known_bytes, unknown_sizes
+                previous = sizes[index]
+                if size is not None and size != previous:
+                    sizes[index] = size
+                    known_bytes += size - (previous or 0)
+                    unknown_sizes -= int(previous is None)
+
+            def report(items_done, bytes_done, status):
+                total = known_bytes if not unknown_sizes else None
+                progress(FolderProgress(items_done, bytes_done, total, status), None)
+
             for index, child in enumerate(item.children):
                 if cancelled():
                     raise InterruptedError('Folder download cancelled')
                 target = Path(child.destination)
                 safe_local_target(root, target.relative_to(root).as_posix())
-                now = time.monotonic()
-                if now >= next_update:
-                    progress(index, len(item.children))
-                    progress(f'@stage:{index + 1}/{len(item.children)} · {target.name}', None)
-                    next_update = now + 0.15
+                label = f'{index + 1}/{len(item.children)} · {target.name}'
+                report(index, completed_bytes, label)
+                next_update = 0.0
+                observed = 0
+
                 def child_progress(count, total):
-                    nonlocal next_update
-                    now = time.monotonic()
-                    if now < next_update:
-                        return
+                    nonlocal next_update, observed
                     if isinstance(count, str):
-                        detail = count.removeprefix('@stage:')
-                    elif total:
-                        detail = f'{min(100, count * 100 // total)}%'
-                    else:
-                        detail = f'{count:,} bytes'
-                    progress(f'@stage:{index + 1}/{len(item.children)} · {target.name} · {detail}', None)
-                    next_update = now + 0.15
+                        report(index, completed_bytes + observed,
+                               f"{label} · {count.removeprefix('@stage:')}")
+                        return
+                    observed = count
+                    update_size(index, total)
+                    now = time.monotonic()
+                    if now >= next_update:
+                        report(index, completed_bytes + observed, label)
+                        next_update = now + 0.15
 
                 try:
-                    perform(child, child_progress)
+                    size, _ = perform(child, child_progress)
                 except InterruptedError:
-                    progress(index, len(item.children))
                     raise
                 except Exception as exc:
-                    progress(index, len(item.children))
                     raise RuntimeError(f'{target.relative_to(root)}: {exc}') from exc
-            progress(len(item.children), len(item.children))
-            return (None, None)
+                update_size(index, size)
+                completed_bytes += size
+                report(index + 1, completed_bytes, label)
+
+            return (completed_bytes, None)
 
         def after(result):
             self.queue.finish(item)
@@ -684,16 +715,19 @@ class TransfersViewMixin:
         QTimer.singleShot(0, lambda: self.pump_queue(tab))
 
     def on_transfer_progress(self, item, count, total):
+        if isinstance(count, FolderProgress):
+            item.folder_progress = count
+            item.phase = count.status
+            self.queue.progress(item, count.items_done, len(item.children))
+            count, total = count.bytes_done, count.bytes_total
         if isinstance(count, str) and count.startswith('@stage:'):
             item.phase = count[7:]
             item.speed_bps = 0.
             item.eta_seconds = None
             self.render_queue()
             return
-        self.queue.progress(item, count, total)
-        if item.children:
-            self.render_queue()
-            return
+        if not item.children:
+            self.queue.progress(item, count, total)
         estimator = self.transfer_metrics.get(item.id)
         if estimator is None:
             estimator = ETAEstimator()
