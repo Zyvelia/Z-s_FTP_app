@@ -289,17 +289,30 @@ class TransfersViewMixin:
     def render_queue(self):
         current = self.queue.jobs
         running = next((job for job in current if job.status == 'Running'), None)
-        if running:
-            phase = getattr(running, 'phase', 'Uploading')
-            stages = ('Uploading', 'Verifying', 'Renaming', 'Completed') if running.direction == 'upload' else ('Downloading', 'Verifying', 'Finalizing', 'Completed')
-            current_idx = stages.index(phase) if phase in stages else 0
-            self.stage_ribbon.setText('   ›   '.join(
-                ('✓ ' if i < current_idx else ('● ' if i == current_idx else '○ ')) + stage
-                for i, stage in enumerate(stages)))
-        elif current and current[-1].status == 'Completed':
-            self.stage_ribbon.setText('✓ Uploading   ›   ✓ Verifying   ›   ✓ Renaming   ›   ✓ Completed')
+        featured = running
+        if featured is None and current and current[-1].status == 'Completed':
+            featured = current[-1]
+        if featured is None:
+            self.stage_ribbon.setText('No active transfers')
         else:
-            self.stage_ribbon.setText('○ Uploading   ›   ○ Verifying   ›   ○ Renaming   ›   ○ Completed')
+            if featured.direction == 'upload':
+                stages = ['Uploading', 'Renaming']
+            elif featured.direction == 'download':
+                stages = ['Downloading', 'Finalizing']
+            else:
+                stages = ['Downloading' if featured.children else 'Processing']
+            if featured.verify_sha256 and featured.direction in ('upload', 'download'):
+                stages.insert(1, 'Verifying')
+            stages.append('Completed')
+            if featured.status == 'Completed':
+                labels = ['✓ ' + stage for stage in stages]
+            else:
+                current_idx = stages.index(featured.phase) if featured.phase in stages else 0
+                labels = [
+                    ('✓ ' if i < current_idx else '● ' if i == current_idx else '○ ') + stage
+                    for i, stage in enumerate(stages)
+                ]
+            self.stage_ribbon.setText('   ›   '.join(labels))
         self.queue_table.setRowCount(len(current))
         for row, item in enumerate(current):
             tab = next((t for t in self.sessions if str(id(t)) == item.session_id), None)
@@ -441,20 +454,22 @@ class TransfersViewMixin:
         sid = str(id(tab))
         item = self.queue.next_for(sid)
         if item is None: return
+        item.verify_sha256 = self.verify_checksums.isChecked()
         self.render_queue()
 
         settings = TransferSettings(self.bandwidth_limit.value(),
                                     self.retry_limit.value(), self.backoff_delay.value(),
                                     self.chunk_select.currentData())
         item.attempts = 1
-        verify_checksums = self.verify_checksums.isChecked()
         item.speed_bps = 0.
         item.eta_seconds = None
         self.transfer_metrics.pop(item.id, None)
 
+        verify_sha256 = item.verify_sha256
+
         def perform(item, progress):
             backend = state.backend
-            verify_enabled = verify_checksums and item.direction in ('upload', 'download')
+            verify_enabled = verify_sha256 and item.direction in ('upload', 'download')
             if item.direction == 'mkdir_local':
                 dest = Path(item.destination)
                 if dest.is_symlink() or dest.is_file(): raise FileExistsError(dest)

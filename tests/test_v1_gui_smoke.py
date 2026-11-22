@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from hashlib import sha256
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -14,6 +14,7 @@ try:
     from PySide6.QtTest import QSignalSpy
     from PySide6.QtWidgets import QApplication
     from zftp.ui.main_window import MainWindow
+    from zftp.services.sessions import ConnectionSession
     from zftp.services.transfer_history import TransferHistory
     from zftp.services.workflows import WorkflowStore
     from zftp.transfers.transfer_queue import Transfer
@@ -124,6 +125,42 @@ class GUIv1SmokeTests(unittest.TestCase):
                 self.assertIn('checksum', panel.status.text())
                 self.assertEqual(executable.read_bytes(), data)
                 self.assertFalse(panel.active_or_stopping)
+
+    def test_transfers_only_reread_remote_file_when_verification_is_enabled(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        self.assertFalse(window.verify_checksums.isChecked())
+        backend = Mock()
+        tab = Mock()
+        state = ConnectionSession(backend, 'FTP', 'localhost', 21, 'test', connected=True)
+        tab.state = state
+        window.sessions[tab] = state
+        self.addCleanup(window.sessions.clear)
+
+        def upload(*args, verify_staged, **_):
+            if verify_staged is not None:
+                verify_staged('package.pkg.zftp.part')
+            return 1024
+
+        with (patch.object(window, 'run_session_job') as start_job,
+              patch('zftp.ui.transfers_view.resilient_upload', side_effect=upload),
+              patch('zftp.ui.transfers_view.resilient_download', return_value=1024),
+              patch('zftp.ui.transfers_view.verify_transfer', return_value='digest') as verify):
+            for enabled in (False, True):
+                window.verify_checksums.setChecked(enabled)
+                for direction in ('upload', 'download'):
+                    with self.subTest(enabled=enabled, direction=direction):
+                        item = Transfer(str(id(tab)), direction, 'package.pkg', 'copy.pkg', '/', '.')
+                        window.queue.add(item)
+                        window.pump_queue(tab)
+                        operation = start_job.call_args.args[2]
+                        result = operation(Mock())
+                        self.assertEqual(result, (1024, 'digest' if enabled else None))
+                        self.assertEqual(verify.call_count, int(enabled))
+                        verify.reset_mock()
+                        window.queue.finish(item)
+                        window.render_queue()
+                        self.assertEqual('Verifying' in window.stage_ribbon.text(), enabled)
 
     def test_activity_combines_session_log_and_alerts(self):
         window = MainWindow()

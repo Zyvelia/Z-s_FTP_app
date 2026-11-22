@@ -25,6 +25,7 @@ class Transfer:
     eta_seconds: float | None = None
     children: tuple[Transfer, ...] = ()
     skipped: int = 0
+    verify_sha256: bool = False
 
     @property
     def name(self):

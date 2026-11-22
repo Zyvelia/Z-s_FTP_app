@@ -25,7 +25,7 @@ TOPICS = (
     )),
     ('Queue & verification', (
         ('Transfers', 'The queue shows running and pending jobs, progress, and errors. Select a row to cancel that job, or use Clear finished to remove completed rows from the display.'),
-        ('Settings', 'Adjust the bandwidth limit, retry count, backoff, and chunk size in transfer settings. SHA-256 verification can add transfer time because it reads the remote data again.'),
+        ('Settings', 'Adjust the bandwidth limit, retry count, backoff, and chunk size in transfer settings. Full SHA-256 verification is off by default. Turn it on for a full checksum comparison, which reads the remote file again.'),
         ('Activity and history', 'Activity shows session events and alerts in one feed. Click History above the transfer queue to see saved transfer outcomes or export them as CSV. Toggle desktop notifications in the status bar.'),
     )),
     ('PS3 file tools', (

@@ -34,6 +34,8 @@ See the [v2.1.12 changelog](docs/changelog/CHANGELOG_v2.1.12.md), [release histo
 
 Click **Activity** above the transfer queue for connection events, transfer updates, and alerts. The **History** button opens saved transfer outcomes and CSV export directly. Open **Workflows** in the same window to create or run a saved sequence of file copies.
 
+Transfers skip the extra checksum pass by default. Enable **Full SHA-256 verification** in **Transfer settings** when you want an end-to-end checksum comparison. It reads the remote file again and can substantially increase transfer time.
+
 ### View or edit PS3 PARAM.SFO files
 
 In the remote browser, open the game’s folder, right-click `PARAM.SFO`, and choose **View / edit PARAM.SFO**. You can check fields such as `TITLE`, `TITLE_ID`, and `CATEGORY` without saving. The editor supports UTF-8 text and unsigned integers in their existing field space and shows raw fields as read-only. **Save with backup** checks whether the file changed since opening and keeps the original in the same remote folder.
