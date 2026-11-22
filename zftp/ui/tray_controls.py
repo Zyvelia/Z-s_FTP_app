@@ -179,10 +179,11 @@ class TrayControlsMixin:
             return
         if (any(state.busy for state in self.sessions.values())
                 or any(job.status in ('Queued', 'Running') for job in self.queue.jobs)
-                or self.server_panel.active_or_stopping or self.sftp_server_panel.active_or_stopping):
+                or self.server_panel.active_or_stopping or self.sftp_server_panel.active_or_stopping
+                or self.nfs_server_panel.active_or_stopping):
             self.show_from_tray()
             QMessageBox.information(self, 'Z FTP is busy',
-                                    'Finish queued and active transfers and stop any built-in servers before updating.')
+                                    'Finish queued and active transfers and stop any active servers before updating.')
             return
         self._pending_updater = updater
         self.quit_from_tray()

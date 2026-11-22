@@ -31,6 +31,7 @@ from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
+from zftp.ui.nfs_server_ui import NFSServerPanel
 from zftp.transfers.integrity import verify_transfer
 from zftp.services.transfer_history import TransferHistory
 from zftp.services.workflows import WorkflowStore
@@ -95,6 +96,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.main_sections.addTab(self.server_panel, "FTP/FTPS · OFF")
         self.sftp_server_panel = SFTPServerPanel(self)
         self.main_sections.addTab(self.sftp_server_panel, "SFTP · OFF")
+        self.nfs_server_panel = NFSServerPanel(self)
+        self.main_sections.addTab(self.nfs_server_panel, "NFS · OFF")
 
         shell = QHBoxLayout(root)
         shell.setContentsMargins(0, 0, 0, 0)
@@ -116,6 +119,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             ('transfers', 'Transfers'),
             ('ftp_server', 'FTP/FTPS Server'),
             ('sftp_server', 'SFTP Server'),
+            ('nfs_server', 'NFS Server'),
             ('settings', 'Settings'),
             ('about', 'About'),
         ):
@@ -127,6 +131,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
                 'transfers': QStyle.SP_ArrowUp,
                 'ftp_server': QStyle.SP_DriveNetIcon,
                 'sftp_server': QStyle.SP_DriveNetIcon,
+                'nfs_server': QStyle.SP_DriveNetIcon,
                 'settings': QStyle.SP_FileDialogContentsView,
                 'about': QStyle.SP_MessageBoxInformation,
             }
@@ -568,7 +573,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         """Navigate without duplicating any transfer or hosting controller."""
         if section == 'about':
             QMessageBox.information(self, 'About Z FTP',
-                'Z FTP v2.1.12\nFTP, FTPS and SFTP clients and servers.\n'
+                'Z FTP v2.1.12\nFTP, FTPS and SFTP clients and servers. Optional NFSv3 hosting.\n'
                 'Includes optional PS3/mmCM compatibility and performance settings.')
             return
         for key, button in self.sidebar_buttons.items():
@@ -576,8 +581,13 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             button.setProperty('selected', selected)
             button.style().unpolish(button)
             button.style().polish(button)
-        if section in ('ftp_server', 'sftp_server'):
-            self.main_sections.setCurrentIndex(1 if section == 'ftp_server' else 2)
+        server_pages = {
+            'ftp_server': self.server_panel,
+            'sftp_server': self.sftp_server_panel,
+            'nfs_server': self.nfs_server_panel,
+        }
+        if section in server_pages:
+            self.main_sections.setCurrentWidget(server_pages[section])
             return
         self.main_sections.setCurrentIndex(0)
         if section == 'connection':
@@ -600,18 +610,21 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.toggle_setup.setText('Connection settings  ▴' if visible else 'Connection settings  ▾')
 
     def refresh_server_badge(self):
-        is_running = self.server_panel.controller.running
-        self.server_badge.setText('Server running' if is_running else 'Server off')
-        self.server_badge.setProperty('status', 'on' if is_running else 'off')
+        servers = (
+            ('FTP/FTPS', self.server_panel, self.server_panel.controller.running),
+            ('SFTP', self.sftp_server_panel, self.sftp_server_panel.controller.running),
+            ('NFS', self.nfs_server_panel, self.nfs_server_panel.running),
+        )
+        running = []
+        for protocol, panel, active in servers:
+            state = 'ON' if active else 'OFF'
+            self.main_sections.setTabText(self.main_sections.indexOf(panel), f'{protocol} · {state}')
+            if active:
+                running.append(protocol)
+        self.server_badge.setText(f"{', '.join(running)} running" if running else 'Server off')
+        self.server_badge.setProperty('status', 'on' if running else 'off')
         self.server_badge.style().unpolish(self.server_badge)
         self.server_badge.style().polish(self.server_badge)
-        self.main_sections.setTabText(1, 'FTP/FTPS · ON' if is_running else 'FTP/FTPS · OFF')
-        self.main_sections.setTabText(2, 'SFTP · ON' if self.sftp_server_panel.controller.running else 'SFTP · OFF')
-        if self.sftp_server_panel.controller.running and not is_running:
-            self.server_badge.setText('SFTP server running')
-            self.server_badge.setProperty('status', 'on')
-            self.server_badge.style().unpolish(self.server_badge)
-            self.server_badge.style().polish(self.server_badge)
 
 
     def notify(self, level, title, message):
