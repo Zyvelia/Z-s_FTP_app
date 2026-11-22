@@ -3,12 +3,15 @@ import os
 import sys
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtTest import QSignalSpy
     from PySide6.QtWidgets import QApplication
     from zftp.ui.main_window import MainWindow
     from zftp.services.transfer_history import TransferHistory
@@ -67,8 +70,9 @@ class GUIv1SmokeTests(unittest.TestCase):
             executable = Path(tmp) / 'WinNFSd.exe'
             executable.touch()
             panel.folder.setText(str(folder))
-            panel.executable.setText(str(executable))
             with (patch.object(panel, 'refresh_addresses'),
+                  patch('zftp.ui.nfs_server_ui.backend_path', return_value=executable),
+                  patch('zftp.ui.nfs_server_ui.has_verified_backend', return_value=True),
                   patch.object(worker, 'setProgram', side_effect=lambda _: set_program(sys.executable)) as program,
                   patch.object(worker, 'setArguments',
                                side_effect=lambda _: set_arguments(['-u', '-c', fake_server])) as arguments):
@@ -90,6 +94,36 @@ class GUIv1SmokeTests(unittest.TestCase):
                     if panel.active_or_stopping:
                         worker.kill()
                         worker.waitForFinished(3000)
+
+    def test_nfs_download_rejects_changed_payload_before_launch(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        panel = window.nfs_server_panel
+        data = b'expected binary'
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = folder / 'download.exe'
+            executable = folder / 'cache' / 'WinNFSd.exe'
+            source.write_bytes(data)
+            with (patch('zftp.ui.nfs_server_ui.BACKEND_URL', QUrl.fromLocalFile(str(source)).toString()),
+                  patch('zftp.ui.nfs_server_ui.BACKEND_SIZE', len(data)),
+                  patch('zftp.servers.nfs_backend.BACKEND_SIZE', len(data)),
+                  patch('zftp.servers.nfs_backend.BACKEND_SHA256', sha256(data).hexdigest()),
+                  patch.object(panel, '_launch') as launch):
+                panel._download_backend(executable, folder)
+                self.assertTrue(QSignalSpy(panel._download.finished).wait(3000))
+                launch.assert_called_once_with(executable, folder)
+                self.assertEqual(executable.read_bytes(), data)
+                self.assertFalse(panel.active_or_stopping)
+
+                launch.reset_mock()
+                source.write_bytes(b'altered binary!')
+                panel._download_backend(executable, folder)
+                self.assertTrue(QSignalSpy(panel._download.finished).wait(3000))
+                launch.assert_not_called()
+                self.assertIn('checksum', panel.status.text())
+                self.assertEqual(executable.read_bytes(), data)
+                self.assertFalse(panel.active_or_stopping)
 
     def test_activity_combines_session_log_and_alerts(self):
         window = MainWindow()

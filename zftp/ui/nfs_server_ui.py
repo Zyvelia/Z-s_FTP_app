@@ -4,12 +4,17 @@ from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QProcess, QTimer, Qt
+from PySide6.QtCore import QProcess, QTimer, Qt, QUrl
 from PySide6.QtGui import QTextCursor
-from PySide6.QtNetwork import QNetworkInterface
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkInterface, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
+)
+
+
+from zftp.servers.nfs_backend import (
+    BACKEND_SIZE, BACKEND_URL, backend_path, has_verified_backend, save_backend,
 )
 
 
@@ -25,6 +30,15 @@ class NFSServerPanel(QWidget):
         self._supported = sys.platform == 'win32'
         self._stopping = False
         self._bind_address = None
+        self._download = None
+        self._download_data = bytearray()
+        self._download_failure = ''
+        self._network = QNetworkAccessManager(self)
+        self._download_timer = QTimer(self)
+        self._download_timer.setSingleShot(True)
+        self._download_timer.setInterval(30000)
+        self._download_timer.timeout.connect(
+            lambda: self._cancel_download('NFS setup timed out. Check your internet connection and try again.'))
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.MergedChannels)
         self.process.started.connect(self._started)
@@ -41,25 +55,13 @@ class NFSServerPanel(QWidget):
         title.setObjectName('sectionHeading')
         layout.addWidget(title)
         requirements = QLabel(
-            'Writable NFSv3 hosting on Windows. Select an official '
-            '<a href="https://github.com/winnfsd/winnfsd/releases">WinNFSd.exe</a> '
-            'and a dedicated folder on your PC.')
-        requirements.setOpenExternalLinks(True)
+            'Share a Windows folder with your PS4 over NFSv3. '
+            'First use downloads the server component automatically.')
         requirements.setWordWrap(True)
         layout.addWidget(requirements)
 
         self.settings = QWidget()
         form = QFormLayout(self.settings)
-        self.executable = QLineEdit()
-        self.executable.setReadOnly(True)
-        self.executable.setPlaceholderText('Select WinNFSd.exe')
-        executable_row = QHBoxLayout()
-        executable_row.addWidget(self.executable, 1)
-        browse_executable = QPushButton('Browse…')
-        browse_executable.clicked.connect(self._browse_executable)
-        executable_row.addWidget(browse_executable)
-        form.addRow('WinNFSd', executable_row)
-
         self.folder = QLineEdit()
         self.folder.setReadOnly(True)
         self.folder.setPlaceholderText('Choose a folder for your dumps')
@@ -108,18 +110,17 @@ class NFSServerPanel(QWidget):
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         self.output.setMaximumBlockCount(200)
-        self.output.setPlaceholderText('WinNFSd output appears here.')
+        self.output.setPlaceholderText('NFS server output appears here.')
         layout.addWidget(self.output, 1)
 
         self.address.currentIndexChanged.connect(self._update_controls)
         self.folder.textChanged.connect(self._update_controls)
-        self.executable.textChanged.connect(self._update_controls)
         self.refresh_addresses()
         self._update_controls()
 
     @property
     def active_or_stopping(self):
-        return self.process.state() != QProcess.NotRunning
+        return self._download is not None or self.process.state() != QProcess.NotRunning
 
     @property
     def running(self):
@@ -147,12 +148,6 @@ class NFSServerPanel(QWidget):
         elif self.address.count() == 2:
             self.address.setCurrentIndex(1)
 
-    def _browse_executable(self):
-        filename, _ = QFileDialog.getOpenFileName(
-            self, 'Select WinNFSd.exe', self.executable.text(), 'Windows executable (*.exe)')
-        if filename:
-            self.executable.setText(filename)
-
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(self, 'Select NFS share folder', self.folder.text())
         if folder:
@@ -161,7 +156,8 @@ class NFSServerPanel(QWidget):
     def _update_controls(self, *_):
         active = self.active_or_stopping
         self.settings.setEnabled(self._supported and not active)
-        self.start_button.setEnabled(bool(self.address.currentData() and self.folder.text() and self.executable.text()))
+        self.start_button.setEnabled(bool(self.address.currentData() and self.folder.text()))
+        self.stop_button.setText('Cancel setup' if self._download is not None else 'Stop sharing')
         self.stop_button.setEnabled(active and not self._stopping)
         self.copy_url.setEnabled(self.running and not self._stopping)
 
@@ -171,13 +167,9 @@ class NFSServerPanel(QWidget):
 
         self.refresh_addresses()
         address = self.address.currentData()
-        executable = Path(self.executable.text())
         folder = Path(self.folder.text())
         if not address:
             self.status.setText('Choose the private IPv4 address on the same network as your PS4.')
-            return
-        if not executable.is_absolute() or executable.name.lower() != 'winnfsd.exe' or not executable.is_file():
-            self.status.setText('Select the WinNFSd.exe file from the official release.')
             return
         if not folder.is_absolute() or not folder.is_dir():
             self.status.setText('Choose an existing folder for the share.')
@@ -194,9 +186,66 @@ class NFSServerPanel(QWidget):
         self._bind_address = address
         self.output.clear()
         self.url.clear()
-        self.status.setText('Starting WinNFSd…')
+        try:
+            executable = backend_path()
+            verified = has_verified_backend(executable)
+        except OSError as error:
+            self.status.setText(f'Could not read the NFS server cache. {error}')
+            return
+        if verified:
+            self._launch(executable, folder)
+        else:
+            self._download_backend(executable, folder)
+
+    def _download_backend(self, executable, folder):
+        self.status.setText('Downloading the NFS server component…')
+        self._download_data.clear()
+        self._download_failure = ''
+        request = QNetworkRequest(QUrl(BACKEND_URL))
+        request.setAttribute(QNetworkRequest.RedirectPolicyAttribute, QNetworkRequest.NoLessSafeRedirectPolicy)
+        reply = self._network.get(request)
+        self._download = reply
+        reply.readyRead.connect(self._read_download)
+        reply.finished.connect(lambda: self._download_finished(executable, folder))
+        self._download_timer.start()
+        self._update_controls()
+
+    def _read_download(self):
+        remaining = BACKEND_SIZE - len(self._download_data)
+        self._download_data.extend(self._download.read(remaining + 1).data())
+        if len(self._download_data) > BACKEND_SIZE:
+            self._cancel_download('NFS server download exceeded its expected size.')
+
+    def _cancel_download(self, message):
+        if self._download is not None:
+            self._download_failure = message
+            self._download.abort()
+
+    def _download_finished(self, executable, folder):
+        self._download_timer.stop()
+        reply, self._download = self._download, None
+        failure = self._download_failure
+        if not failure and reply.error() != QNetworkReply.NoError:
+            failure = f'Could not download the NFS server component. {reply.errorString()}'
+        if not failure:
+            remaining = BACKEND_SIZE - len(self._download_data)
+            self._download_data.extend(reply.read(remaining + 1).data())
+            try:
+                save_backend(executable, bytes(self._download_data))
+            except (OSError, ValueError) as error:
+                failure = str(error)
+        reply.deleteLater()
+        self._download_data.clear()
+        if failure:
+            self.status.setText(failure)
+            self._update_controls()
+        else:
+            self._launch(executable, folder)
+
+    def _launch(self, executable, folder):
+        self.status.setText('Starting NFS server…')
         self.process.setProgram(str(executable))
-        self.process.setArguments(['-addr', address, str(folder), EXPORT])
+        self.process.setArguments(['-addr', self._bind_address, str(folder), EXPORT])
         self.process.start()
         self._update_controls()
 
@@ -205,7 +254,7 @@ class NFSServerPanel(QWidget):
             # Use the console command without hiding a console inherited by WinNFSd.
             self.process.write(b'log off\n')
             self.url.setText(f'nfs://{self._bind_address}{EXPORT}')
-            self.status.setText('WinNFSd running. Connect using the NFS URL.')
+            self.status.setText('NFS server running. Connect using the NFS URL.')
         self._update_controls()
 
     def _read_output(self):
@@ -215,10 +264,13 @@ class NFSServerPanel(QWidget):
             self.output.insertPlainText(data.decode(errors='replace'))
 
     def stop(self):
+        if self._download is not None:
+            self._cancel_download('NFS setup cancelled.')
+            return
         if not self.active_or_stopping or self._stopping:
             return
         self._stopping = True
-        self.status.setText('Stopping WinNFSd…')
+        self.status.setText('Stopping NFS server…')
         # WinNFSd asks for confirmation when a client is mounted.
         self.process.write(b'quit\ny\n')
         self.stop_timer.start()
@@ -231,7 +283,7 @@ class NFSServerPanel(QWidget):
             self.status.setText('Stopped')
         else:
             self.status.setText(
-                f'WinNFSd exited (code {exit_code}). Check the output and whether another NFS server is running.')
+                f'NFS server exited (code {exit_code}). Check the output and whether another NFS server is running.')
         self._stopping = False
         self.url.clear()
         self._update_controls()
@@ -241,5 +293,5 @@ class NFSServerPanel(QWidget):
             self.stop_timer.stop()
             self._stopping = False
             self.url.clear()
-            self.status.setText(f'Could not start WinNFSd. {self.process.errorString()}')
+            self.status.setText(f'Could not start the NFS server. {self.process.errorString()}')
             self._update_controls()

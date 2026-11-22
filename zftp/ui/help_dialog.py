@@ -39,7 +39,7 @@ TOPICS = (
     )),
     ('Hosting a server', (
         ('FTP/FTPS Server and SFTP Server', 'These pages make your PC the server. Set the shared folder, address, credentials, and access options before starting. Use Connection when you want to connect to your PS3 instead.'),
-        ('NFS Server', 'On Windows, open NFS Server and select WinNFSd.exe from the official release, a dedicated destination folder, and your PC’s private IPv4 address. Start the writable share and copy its URL into your PS4’s NFS client. In Itemzflow, enter the URL under Settings → Fuse NFS IP, then choose /hostapp as the Dumper Path.'),
+        ('NFS Server', 'On Windows, open NFS Server and select a dedicated destination folder and your PC’s private IPv4 address. Start the writable share and copy its URL into your PS4’s NFS client. First use downloads and verifies the server component automatically. In Itemzflow, enter the URL under Settings → Fuse NFS IP, then choose /hostapp as the Dumper Path.'),
         ('Stop sharing', 'Stop the server from its page or the tray when you are done. Servers are disabled by default.'),
     )),
     ('Tray & Windows updates', (
