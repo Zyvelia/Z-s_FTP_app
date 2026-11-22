@@ -70,6 +70,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self._tray_status_action = None
         self._tray_visibility_action = None
         self.pool = QThreadPool(self); self.pool.setMaxThreadCount(8)
+        self.download_pool = QThreadPool(self)
+        self.download_pool.setMaxThreadCount(4)
         self.jobs: list[Job] = []
         # Graceful close is a two-phase process: request cancellation, then let
         # workers finish before disconnecting and destroying their Qt owners.
@@ -669,7 +671,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.empty.setVisible(not self.sessions)
         self.sync_button.setEnabled(bool(tab and tab.state.connected and not tab.state.closing))
         self.sync_action.setEnabled(self.sync_button.isEnabled())
-        active = sum(1 for t in self.sessions if t.state.busy)
+        active = sum(int(state.busy) + len(state.downloads) for state in self.sessions.values())
         count = sum(1 for t in self.sessions if t.state.connected)
         summary = status_label(count, active)
         self.connection_badge.setText(summary)

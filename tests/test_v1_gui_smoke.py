@@ -5,16 +5,19 @@ import tempfile
 import unittest
 from hashlib import sha256
 from pathlib import Path
+from threading import Event
 from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
     from PySide6.QtCore import QUrl
-    from PySide6.QtTest import QSignalSpy
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtTest import QSignalSpy, QTest
+    from PySide6.QtWidgets import QApplication, QMessageBox
     from zftp.ui.main_window import MainWindow
+    from zftp.protocols.ftp_engine import RemoteEntry
     from zftp.services.sessions import ConnectionSession
+    from zftp.ui.remote_tab import RemoteTab
     from zftp.services.transfer_history import TransferHistory
     from zftp.services.workflows import WorkflowStore
     from zftp.transfers.transfer_queue import Transfer
@@ -132,6 +135,7 @@ class GUIv1SmokeTests(unittest.TestCase):
         self.assertFalse(window.verify_checksums.isChecked())
         backend = Mock()
         tab = Mock()
+        tab.make_download_connection = None
         state = ConnectionSession(backend, 'FTP', 'localhost', 21, 'test', connected=True)
         tab.state = state
         window.sessions[tab] = state
@@ -161,6 +165,74 @@ class GUIv1SmokeTests(unittest.TestCase):
                         window.queue.finish(item)
                         window.render_queue()
                         self.assertEqual('Verifying' in window.stage_ribbon.text(), enabled)
+
+    def test_two_downloads_allow_an_unrelated_delete_and_cancel_independently(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        primary = Mock()
+        primary.list_dir.return_value = []
+        state = ConnectionSession(primary, 'FTP', 'localhost', 21, 'test', connected=True)
+        tab = RemoteTab(state, window)
+        window.sessions[tab] = state
+        self.addCleanup(window.sessions.clear)
+        downloads = [Mock(), Mock()]
+        tab.make_download_connection = Mock(side_effect=[(backend, Mock()) for backend in downloads])
+        window.verify_checksums.setChecked(False)
+        window.refresh_history = Mock()
+        window.record_transfer = Mock()
+        started = {'a.bin': Event(), 'b.bin': Event()}
+        release = Event()
+
+        def wait_for(condition):
+            for _ in range(250):
+                if condition():
+                    return
+                QTest.qWait(10)
+            self.fail('Timed out waiting for background job')
+
+        def download(backend, filename, target, progress, cancelled, settings):
+            self.assertIs(backend, downloads[0 if filename == 'a.bin' else 1])
+            started[filename].set()
+            while not release.wait(0.01):
+                if cancelled():
+                    raise InterruptedError('Download cancelled')
+            target.write_bytes(filename.encode())
+            return target.stat().st_size
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'zftp.ui.transfers_view.resilient_download', side_effect=download):
+            root = Path(directory)
+            window.enqueue_downloads(tab, ['a.bin', 'b.bin'], '/', root)
+            try:
+                wait_for(lambda: all(event.is_set() for event in started.values()))
+                self.assertTrue(tab.download.isEnabled())
+                self.assertTrue(tab.delete.isEnabled())
+
+                with (patch.object(tab, 'selected', return_value=RemoteEntry('a.bin', False, 5)),
+                      patch.object(QMessageBox, 'warning') as warning):
+                    window.delete(tab)
+                    warning.assert_called_once()
+                    primary.delete_file.assert_not_called()
+
+                with (patch.object(tab, 'selected', return_value=RemoteEntry('unused.bin', False, 5)),
+                      patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes)):
+                    window.delete(tab)
+                wait_for(lambda: not state.busy)
+                primary.delete_file.assert_called_once_with('unused.bin')
+                self.assertEqual([item.status for item in window.queue.jobs], ['Running', 'Running'])
+
+                window.queue_table.setCurrentCell(0, 0)
+                window.cancel_selected_job()
+                wait_for(lambda: window.queue.jobs[0].status == 'Cancelled')
+                self.assertEqual(window.queue.jobs[1].status, 'Running')
+            finally:
+                release.set()
+                wait_for(lambda: not window.jobs)
+            self.assertEqual(window.queue.jobs[1].status, 'Completed')
+            self.assertEqual((root / 'b.bin').read_bytes(), b'b.bin')
+            self.assertFalse((root / 'a.bin').exists())
+            for backend in downloads:
+                backend.disconnect.assert_called_once()
 
     def test_activity_combines_session_log_and_alerts(self):
         window = MainWindow()

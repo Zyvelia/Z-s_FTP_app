@@ -43,6 +43,12 @@ class SFTPBackend:
         """Called only after the user accepts the exact key presented in the GUI."""
         self._trusted_once[hostname] = key_b64
 
+    def new_session(self):
+        """Create a separate connection with the tab's existing SSH trust."""
+        backend = SFTPBackend()
+        backend._trusted_once = self._trusted_once.copy()
+        return backend
+
     def connect(self, host: str, port: int, username: str, password: str, *, tls: bool = True, timeout: int = 15, key_filename: str | None = None, passphrase: str | None = None):
         del tls  # SFTP uses SSH, not TLS.
         self.disconnect()

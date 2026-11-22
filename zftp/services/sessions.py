@@ -1,5 +1,6 @@
 """Per-tab, independently owned connection state, with no Qt dependency."""
 from dataclasses import dataclass, field
+from threading import Event
 from typing import Any
 from zftp.protocols.ftp_engine import RemoteEntry
 
@@ -17,6 +18,22 @@ class ConnectionSession:
     closing: bool = False
     connected: bool = False
     generation: int = 0
+    downloads: dict[str, Event] = field(default_factory=dict)
+    parallel_downloads: bool = True
+
+    @property
+    def active(self):
+        return self.busy or bool(self.downloads)
+
+    def cancel_transfer(self, transfer_id):
+        if transfer_id in self.downloads:
+            self.downloads[transfer_id].set()
+        else:
+            self.cancelled = True
+
+    def cancel_downloads(self):
+        for cancellation in self.downloads.values():
+            cancellation.set()
 
     def begin(self):
         if self.busy or self.closing:
@@ -33,7 +50,7 @@ class ConnectionSession:
         return True
 
     def request_close(self):
-        if self.busy:
+        if self.active:
             return False
         self.closing = True
         return True
