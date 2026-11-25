@@ -36,11 +36,21 @@ Use **Transfer settings → Parallel downloads** to run up to 32 background down
 
 Click **Activity** above the transfer queue for connection events, transfer updates, and alerts. The **History** button opens saved transfer outcomes and CSV export directly. Open **Workflows** in the same window to create or run a saved sequence of file copies.
 
+Queued and interrupted jobs are saved for recovery. Reconnect to the same protocol, host, port, and username to bring them back. Z FTP checks the existing partial file before resuming and protects completed destination files. Use **Pause queue** in the transfer header or tray menu to stop starting new jobs while active transfers finish.
+
+In **Activity**, choose **Open download folder** to open a completed download’s destination. Use **Toast settings** in the status bar to choose completion, failure, connection, and other desktop alerts. Clear **Desktop notifications** to turn all toasts off.
+
+Turn on **Streamer mode** in the status bar or press **Ctrl+Shift+H** to mask typed connection details and hide connection identifiers in client views and alerts. Server setup and workflow views are temporarily hidden while it’s on.
+
 Transfers skip the extra checksum pass by default. Enable **Full SHA-256 verification** in **Transfer settings** when you want an end-to-end checksum comparison. It reads the remote file again and can substantially increase transfer time.
 
 ### Read or edit logs, configuration files, and database files
 
 Double-click a remote `.txt`, `.log`, `.logs`, `.ini`, `.db`, or `.dat` file to open its viewer. Local files with those extensions open the same way, with local `.txt` files using your default text app. Click **Edit**, then **Save with backup**. The editor recognizes text and SQLite by their contents and shows other binary data as hex. Text files are limited to 1 MiB, database and data files to 8 MiB, and binary edits to 64 KiB. Hex edits keep the same byte count. SQLite shows up to 100 rows per table and supports editing existing values in ordinary tables with row IDs.
+
+The built-in text viewer has syntax highlighting for JSON, INI, XML, and common scripts. Click **Go to line** or press **Ctrl+G** to jump to a line. Use the encoding menu to reopen the original bytes in UTF-8, UTF-16, Windows-1252, or another supported encoding. Saving uses the selected encoding.
+
+Use **File actions → Search** on a remote tab to combine filename wildcards, extensions, byte ranges, and modification dates. Date filters use UTC day boundaries. FTP servers that only return Unix-style listings may report times in the server’s local zone. Results omit entries whose required metadata is unavailable.
 
 To use Visual Studio Code for a remote text file, right-click it and choose **Edit in VS Code**. Save the temporary copy in VS Code, then return to Z FTP and click **Review changes** and **Upload reviewed changes**. Z FTP keeps the original as a backup and checks that the remote file still matches the copy you opened. Double-click opens the built-in viewer. External editing supports text files up to 1 MiB.
 

@@ -53,6 +53,7 @@ class RemoteTab(QWidget):
     def __init__(self, state: ConnectionSession, parent=None):
         super().__init__(parent)
         self.state = state
+        self.display_text = str
         self._render_gate = RenderGate()
         self.directory_cache = RemoteDirectoryCache()
         layout = QVBoxLayout(self)
@@ -132,7 +133,7 @@ class RemoteTab(QWidget):
                                (self.state.busy and self.cancel.property('transfer_active') is True))
 
     def show_entries(self):
-        self.path_label.setText('Remote: ' + self.state.remote_path)
+        self.path_label.setText(self.display_text('Remote: ' + self.state.remote_path))
         generation = self._render_gate.new()
         self.table.setUpdatesEnabled(False)
         self.table.setSortingEnabled(False)

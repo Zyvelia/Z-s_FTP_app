@@ -101,6 +101,25 @@ class RemoteManagementTests(unittest.TestCase):
     def test_text_size_limit(self):
         with self.assertRaises(ValueError): encode_editor_text('a' * (1024 * 1024 + 1))
 
+    def test_advanced_remote_search_filters_case_date_and_size(self):
+        from zftp.protocols.ftp_engine import RemoteEntry, ftp_modified
+        from zftp.services.remote_management import RemoteSearch
+
+        query = RemoteSearch.from_fields('Game-??.*', True, '.pkg, tar.gz', '80', '120',
+                                         '2026-01-01', '2026-01-31')
+        inside = ftp_modified('20260131235959.250')
+        outside = ftp_modified('20260201000000')
+        matches = RemoteEntry('game-01.PKG', False, 100, modified=inside)
+        self.assertTrue(query.matches(matches, matches.name))
+        for entry in (
+            RemoteEntry('game-001.pkg', False, 100, modified=inside),
+            RemoteEntry('game-01.iso', False, 100, modified=inside),
+            RemoteEntry('game-01.pkg', False, 121, modified=inside),
+            RemoteEntry('game-01.pkg', False, 100, modified=outside),
+            RemoteEntry('game-01.pkg', False, 100),
+        ):
+            self.assertFalse(query.matches(entry, entry.name), entry)
+
     def test_recursive_search_restores_directory(self):
         b = MemoryBackend()
         results = find_remote(b, '/home', 'txt')

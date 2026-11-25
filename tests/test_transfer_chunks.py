@@ -14,7 +14,15 @@ class MemoryFTP:
         self.files = {}
         self.blocksize = None
 
+    def voidcmd(self, command):
+        if command != 'TYPE I':
+            raise AssertionError(f'Unexpected transfer command {command}')
+        self.binary_mode = True
+        return '200 Type set to I'
+
     def size(self, name):
+        if not getattr(self, 'binary_mode', False):
+            raise AssertionError('SIZE requires binary mode')
         if name not in self.files:
             raise ftplib.error_perm('550 Not found')
         return len(self.files[name])

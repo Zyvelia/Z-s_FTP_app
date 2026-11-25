@@ -107,7 +107,8 @@ class SFTPBackend:
             if item.filename in ('.', '..'):
                 continue
             is_dir = statlib.S_ISDIR(item.st_mode)
-            entries.append(RemoteEntry(item.filename, is_dir, None if is_dir else item.st_size, statlib.S_ISLNK(item.st_mode)))
+            entries.append(RemoteEntry(item.filename, is_dir, None if is_dir else item.st_size, statlib.S_ISLNK(item.st_mode),
+                                       getattr(item, 'st_mtime', None)))
         return sorted(entries, key=lambda item: (not item.is_dir, item.name.casefold()))
 
     list_dir_for_deletion = list_dir

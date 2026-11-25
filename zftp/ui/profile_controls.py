@@ -49,8 +49,10 @@ class ProfileControlsMixin:
         self.profile_select.clear()
         self.profile_select.addItem('Choose a saved connection…', None)
         try:
-            for p in self.store.list():
-                self.profile_select.addItem(('★ ' if p.favorite else '') + p.name, p.id)
+            for index, p in enumerate(self.store.list(), 1):
+                self._connection_values.update((p.host, p.username))
+                name = f'Saved connection {index}' if self.streamer_enabled else p.name
+                self.profile_select.addItem(('★ ' if p.favorite else '') + name, p.id)
         except Exception as exc: QMessageBox.warning(self, 'Saved connections', str(exc))
         self.profile_select.blockSignals(False)
     def load_selected_profile(self):
@@ -88,7 +90,7 @@ class ProfileControlsMixin:
                 raise ValueError('Enter a password to enable secure storage')
             self.store.put(profile, password if password else None)
         except Exception as exc:
-            QMessageBox.warning(self, 'Could not save connection', str(exc)); return False
+            QMessageBox.warning(self, 'Could not save connection', self.private_text(exc)); return False
         self.refresh_profiles()
         index = self.profile_select.findData(profile.id)
         if index >= 0: self.profile_select.setCurrentIndex(index)
@@ -105,8 +107,10 @@ class ProfileControlsMixin:
         def refresh():
             listing.clear()
             try:
-                for p in self.store.list():
-                    item = QListWidgetItem(('★ ' if p.favorite else '') + f'{p.name} — {p.protocol}://{p.host}:{p.port}')
+                for index, p in enumerate(self.store.list(), 1):
+                    name = (f'Saved connection {index} — {p.protocol}' if self.streamer_enabled else
+                            f'{p.name} — {p.protocol}://{p.host}:{p.port}')
+                    item = QListWidgetItem(('★ ' if p.favorite else '') + name)
                     item.setData(Qt.UserRole, p.id); listing.addItem(item)
             except Exception as exc: QMessageBox.warning(dialog, 'Profile error', str(exc))
         def selected():
@@ -119,7 +123,7 @@ class ProfileControlsMixin:
                 if editor.exec() == QDialog.Accepted and self.store_dialog_profile(editor): refresh()
         def do_delete():
             p = selected()
-            if p and QMessageBox.question(dialog, 'Delete saved connection', f'Delete {p.name}?') == QMessageBox.Yes:
+            if p and QMessageBox.question(dialog, 'Delete saved connection', 'Delete the selected saved connection?' if self.streamer_enabled else f'Delete {p.name}?') == QMessageBox.Yes:
                 try: self.store.delete(p.id)
                 except Exception as exc: QMessageBox.warning(dialog, 'Delete failed', str(exc)); return
                 self.refresh_profiles(); refresh()

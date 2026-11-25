@@ -92,6 +92,8 @@ def _check_local_partial(part: Path):
 
 
 def _ftp_size(ftp, name):
+    # FTP servers may reject SIZE while a fresh control channel is in ASCII mode.
+    ftp.voidcmd('TYPE I')
     try:
         return ftp.size(name)
     except ftplib.error_perm as exc:

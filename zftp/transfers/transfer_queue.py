@@ -38,6 +38,7 @@ class Transfer:
     skipped: int = 0
     verify_sha256: bool = False
     folder_progress: FolderProgress | None = None
+    recovered: bool = False
 
     @property
     def name(self):
@@ -46,6 +47,7 @@ class Transfer:
 class TransferQueue:
     def __init__(self):
         self.jobs: list[Transfer] = []
+        self.paused = False
 
     @staticmethod
     def _download_paths(path):
@@ -101,6 +103,8 @@ class TransferQueue:
         return transfer
 
     def next_for(self, session_id: str, *, download_limit=1):
+        if self.paused:
+            return None
         running = [j for j in self.jobs if j.session_id == session_id and j.status == 'Running']
         pending = next((j for j in self.jobs if j.session_id == session_id and j.status == 'Queued'), None)
         if pending is None:

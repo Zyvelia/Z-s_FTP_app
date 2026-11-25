@@ -7,7 +7,7 @@ import time
 import posixpath
 from datetime import datetime
 from pathlib import Path
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize, QSettings, QLockFile
 from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor
 from zftp.services.directory_performance import scan_directory, batches, RenderGate, UpdateThrottle
 from PySide6.QtWidgets import (
@@ -49,6 +49,7 @@ from zftp.ui.transfers_view import TransfersViewMixin
 from zftp.ui.workflow_views import WorkflowViewsMixin
 from zftp.ui.shutdown_controls import ShutdownControlsMixin
 from zftp.ui.profile_controls import ProfileControlsMixin
+from zftp.services.queue_recovery import QueueRecovery
 
 
 class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
@@ -81,7 +82,23 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.store = ProfileStore()
         self.local_path = Path.home()
         self.sessions: dict[RemoteTab, ConnectionSession] = {}
+        self.preferences = QSettings('Zyvelia', 'ZFTP')
+        self.setup_presentation()
         self.queue = TransferQueue()
+        self.queue.paused = self.preferences.value('queue/paused', False, type=bool)
+        queue_path = self.store.path.with_name('queue.json')
+        self._queue_lock = QLockFile(str(queue_path.with_suffix('.lock')))
+        self._queue_lock.setStaleLockTime(0)
+        recovery_disabled = ''
+        try:
+            queue_path.parent.mkdir(parents=True, exist_ok=True)
+            if not self._queue_lock.tryLock(0):
+                recovery_disabled = 'The recovery queue is unavailable or in use by another Z FTP instance.'
+        except OSError as error:
+            recovery_disabled = str(error)
+        self.queue_recovery = QueueRecovery(queue_path, recovery_disabled)
+        self._queue_checkpoint = None
+        self._queue_save_warning = False
         self.transfer_metrics = {}  # transfer id -> ETAEstimator
         self.transfer_tabs: dict[str, RemoteTab] = {}
         self.main_sections = QTabWidget()
@@ -323,6 +340,10 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         queue_label = QLabel('Transfers')
         queue_label.setObjectName('sectionHeading')
         queue_header.addWidget(queue_label)
+        self.queue_pause_button = QPushButton('Resume queue' if self.queue.paused else 'Pause queue')
+        self.queue_pause_button.setToolTip('Active transfers keep running while the queue is paused.')
+        self.queue_pause_button.clicked.connect(lambda: self.set_queue_paused(not self.queue.paused))
+        queue_header.addWidget(self.queue_pause_button)
         self.activity_toggle = QToolButton()
         self.activity_toggle.setText('Activity…')
         self.activity_toggle.setCheckable(True)
@@ -424,7 +445,11 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         details_layout = QVBoxLayout(self.transfer_details)
         self.bottom_tabs = QTabWidget()
         details_layout.addWidget(self.bottom_tabs)
-        self.bottom_tabs.addTab(self.logs, 'Activity')
+        activity_panel = QWidget()
+        activity_layout = QVBoxLayout(activity_panel)
+        self.setup_completion_menu(activity_layout)
+        activity_layout.addWidget(self.logs, 1)
+        self.bottom_tabs.addTab(activity_panel, 'Activity')
         self.history_panel = QWidget()
         history_layout = QVBoxLayout(self.history_panel)
         history_toolbar = QHBoxLayout()
@@ -499,7 +524,6 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.transfer_details.finished.connect(lambda _: self.activity_toggle.setChecked(False))
         layout.addWidget(self.transfer_card, 2)
         self.notifications_enabled = QCheckBox('Desktop notifications')
-        self.notifications_enabled.setChecked(True)
         # Persistent counters derive from session and queue state; no polling or
         # additional network calls are needed to keep them synchronized.
         self.footer_connection = QLabel('● Offline')
@@ -513,7 +537,11 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.statusBar().addPermanentWidget(self.footer_speed)
         self.statusBar().addPermanentWidget(self.notifications_enabled)
         self.statusBar().showMessage('Ready · Server disabled by default')
+        self.setup_presentation_controls()
         self.setup_tray_controls()
+        self.streamer.setChecked(self.preferences.value('privacy/streamer', False, type=bool))
+        if self.queue_recovery.load_error:
+            self.log(f'Could not load the recovery queue: {self.queue_recovery.load_error}')
         self.server_status_timer = QTimer(self)
         self.server_status_timer.timeout.connect(self.refresh_server_badge)
         self.server_status_timer.start(1000)
@@ -544,7 +572,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         for keys, handler in (('F1', self.show_help),
                               ('F5', lambda: self.set_local_path(self.local_path)),
                               ('Ctrl+L', self.focus_local_path),
-                              ('Ctrl+R', self.refresh_current_remote)):
+                              ('Ctrl+R', self.refresh_current_remote),
+                              ('Ctrl+Shift+H', lambda: self.streamer.toggle())):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.activated.connect(handler)
             self._key_shortcuts.append(shortcut)
@@ -582,6 +611,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             'nfs_server': self.nfs_server_panel,
         }
         if section in server_pages:
+            if self.streamer_enabled:
+                return
             self.main_sections.setCurrentWidget(server_pages[section])
             return
         self.main_sections.setCurrentIndex(0)
@@ -622,16 +653,17 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.server_badge.style().polish(self.server_badge)
 
 
-    def notify(self, level, title, message):
-        title = str(title)[:140]
-        message = str(message)[:1000]
+    def notify(self, level, title, message, *, category=None, download_dir=None, download_name=None):
+        title = self.private_text(title)[:140]
+        message = self.private_text(message)[:1000]
         self.log(f'{title} · {message}')
         self.statusBar().showMessage(f'{title} · {message[:150]}', 8000)
-        if self.tray is not None and self.notifications_enabled.isChecked():
-            icon = {'error': QSystemTrayIcon.Critical, 'warning': QSystemTrayIcon.Warning}.get(level, QSystemTrayIcon.Information)
-            if QSystemTrayIcon.supportsMessages():
-                self.tray.showMessage(title, message, icon, 4000)
-
+        if download_dir is not None:
+            self._recent_downloads.appendleft((download_name or title, Path(download_dir)))
+            message = message + '\nOpen the destination from Activity.'
+        if category is None:
+            category = 'failure' if level in ('error', 'warning') else 'other'
+        self.show_notification(level, title, message, category, download_dir)
 
     @staticmethod
     def make_table(side="local"):
@@ -652,7 +684,9 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
     def log(self, message):
         timestamp = datetime.now().strftime('%H:%M:%S')
         line = ' '.join(str(message).splitlines())
-        self.logs.appendPlainText(f'{timestamp}  {line}')
+        entry = f'{timestamp}  {line}'
+        self._activity_lines.append(entry)
+        self.logs.appendPlainText(self.private_text(entry))
 
     def current_tab(self):
         widget = self.tabs.currentWidget()
@@ -686,7 +720,9 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.footer_connection.setProperty('online', bool(connected))
         self.footer_connection.style().unpolish(self.footer_connection)
         self.footer_connection.style().polish(self.footer_connection)
-        self.footer_jobs.setText(f'{len(running)} active · {done} completed')
+        remaining = sum(job.status == 'Queued' for job in jobs) + len(self.queue_recovery.waiting)
+        pause = 'Paused · ' if self.queue.paused else ''
+        self.footer_jobs.setText(f'{pause}{len(running)} active · {remaining} waiting · {done} completed')
         self.footer_speed.setText(f'↑ {upload / 1024:.1f} KiB/s  ↓ {download / 1024:.1f} KiB/s')
 
     def protocol_changed(self, protocol):

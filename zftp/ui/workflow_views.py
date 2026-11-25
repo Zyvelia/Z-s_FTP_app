@@ -311,14 +311,14 @@ class WorkflowViewsMixin:
             timestamp = record['timestamp'][:19].replace('T', ' ')
             source = record['source']
             name = Path(source).name or source
-            values = (timestamp, record['server'], name, record['status'],
+            values = (timestamp, '[hidden]' if self.streamer_enabled else record['server'], name, record['status'],
                       record['sha256'] or 'Not verified')
             for column, value in enumerate(values):
-                cell = QTableWidgetItem(str(value))
+                cell = QTableWidgetItem(self.private_text(value))
                 if column == 2:
-                    cell.setToolTip(escape(source))
+                    cell.setToolTip(escape(self.private_text(source)))
                 elif column == 3:
-                    cell.setToolTip(escape(record['error'] or value))
+                    cell.setToolTip(escape(self.private_text(record['error'] or value)))
                 else:
                     cell.setToolTip(escape(str(value)))
                 self.history_table.setItem(row, column, cell)

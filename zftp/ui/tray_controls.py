@@ -6,6 +6,7 @@ import subprocess
 import os
 import time
 import posixpath
+from itertools import chain
 from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor
@@ -42,9 +43,10 @@ from zftp.services.sync_engine import (Inventory, Change, inventory_local, inven
 
 from zftp.ui.ui_workers import Job, Events
 from zftp.ui.remote_tab import RemoteTab
+from zftp.ui.presentation import PresentationMixin
 
 
-class TrayControlsMixin:
+class TrayControlsMixin(PresentationMixin):
     def setup_tray_controls(self):
         """Create an opt-in background mode; the default X still means Quit."""
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -64,6 +66,10 @@ class TrayControlsMixin:
         activity = menu.addAction('Open Activity')
         activity.triggered.connect(self.show_tray_activity)
         menu.addSeparator()
+        self._tray_pause_action = menu.addAction('Pause queue after active transfers')
+        self._tray_pause_action.triggered.connect(lambda: self.set_queue_paused(not self.queue.paused))
+        self._tray_remaining = menu.addMenu('Remaining files')
+        self._tray_remaining.aboutToShow.connect(self.populate_tray_remaining)
         cancel_queued = menu.addAction('Cancel queued transfers…')
         cancel_queued.triggered.connect(self.tray_cancel_queued)
         cancel_active = menu.addAction('Cancel active transfers…')
@@ -85,6 +91,7 @@ class TrayControlsMixin:
         quit_action.triggered.connect(self.quit_from_tray)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self.on_tray_activated)
+        self.tray.messageClicked.connect(self.toast_clicked)
         self.tray.show()
         # A hidden main window still retains its sockets, timers, jobs, and servers.
         self._tray_update_timer = QTimer(self)
@@ -100,14 +107,37 @@ class TrayControlsMixin:
         connected = sum(bool(tab.state.connected) for tab in self.sessions)
         running = [job for job in self.queue.jobs if job.status == 'Running']
         queued = sum(job.status == 'Queued' for job in self.queue.jobs)
+        recovery = len(self.queue_recovery.waiting)
+        self._tray_pause_action.setText('Resume queue' if self.queue.paused else 'Pause queue after active transfers')
         speed = sum(max(0., job.speed_bps) for job in running)
         status = (f'{connected} connected · {len(running)} active · '
-                  f'{queued} queued · {speed / 1024:.1f} KiB/s')
+                  f'{queued} queued · {recovery} awaiting reconnect · {speed / 1024:.1f} KiB/s')
         if self._tray_status_action is not None:
             self._tray_status_action.setText(status)
         self.tray.setToolTip('Z FTP\n' + status)
         if self._tray_visibility_action is not None:
             self._tray_visibility_action.setText('Hide Z FTP' if self.isVisible() else 'Show Z FTP')
+    def populate_tray_remaining(self):
+        menu = self._tray_remaining
+        menu.clear()
+        files = (
+            (part.name, job.status) for job in self.queue.jobs if job.status in ('Queued', 'Running')
+            for part in (job.children[job.count:] if job.children else (job,))
+            if part.direction in ('download', 'upload')
+        )
+        offline = (
+            (Path(part['source']).name, 'Reconnect') for record in self.queue_recovery.waiting
+            for part in (record['plan']['children'] or (record['plan'],))
+            if part['direction'] in ('download', 'upload')
+        )
+        for index, (filename, status) in enumerate(chain(files, offline)):
+            if index == 15:
+                menu.addAction('Open Transfers to see the queue', self.show_tray_transfers)
+                break
+            menu.addAction(self.private_text(f'{filename} · {status}').replace('&', '&&')).setEnabled(False)
+        if menu.isEmpty():
+            menu.addAction('No files remaining').setEnabled(False)
+
     def hide_to_tray(self):
         if self.tray is None or not self.tray.isVisible():
             return False
@@ -138,12 +168,14 @@ class TrayControlsMixin:
         self.bottom_tabs.setCurrentIndex(0)
     def tray_cancel_queued(self):
         queued = [job for job in self.queue.jobs if job.status == 'Queued']
-        if not queued:
+        waiting = len(self.queue_recovery.waiting)
+        if not queued and not waiting:
             return
         if QMessageBox.question(self, 'Cancel queued transfers',
-                f'Cancel {len(queued)} queued transfer(s)? Running jobs will continue.',
+                f'Cancel {len(queued)} queued and {waiting} waiting for reconnect? Running jobs will continue.',
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
+        self.queue_recovery.waiting = []
         for job in queued:
             self.queue.cancel(job.id)
             tab = next((tab for tab in self.sessions if str(id(tab)) == job.session_id), None)

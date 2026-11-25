@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from codecs import BOM_UTF8, BOM_UTF16_BE, BOM_UTF16_LE
 from dataclasses import dataclass
+from datetime import date, datetime, time, timezone, timedelta
+from fnmatch import fnmatchcase
 import hashlib
 import posixpath
 import uuid
@@ -69,6 +71,30 @@ def identify_text(data, *, strict_controls=False):
         raise ValueError('This file contains binary data')
     newline = '\r\n' if '\r\n' in text else '\r' if '\r' in text else '\n'
     return TextCopy(text, encoding, bom, newline)
+
+
+EDITOR_ENCODINGS = (
+    ('Auto detect', None), ('UTF-8', 'utf-8'), ('UTF-8 with BOM', 'utf-8-sig'),
+    ('UTF-16 LE', 'utf-16-le'), ('UTF-16 BE', 'utf-16-be'),
+    ('Windows-1252', 'cp1252'), ('ISO-8859-1', 'latin-1'), ('DOS CP437', 'cp437'),
+    ('Shift JIS', 'shift_jis'),
+)
+
+
+def decode_editor_copy(data, encoding, *, strict_controls=False):
+    if encoding is None:
+        return identify_text(data, strict_controls=strict_controls)
+    bom = {'utf-8-sig': BOM_UTF8, 'utf-16-le': BOM_UTF16_LE, 'utf-16-be': BOM_UTF16_BE}.get(encoding, b'')
+    if bom and data.startswith(bom):
+        data = data[len(bom):]
+    elif encoding != 'utf-8-sig':
+        bom = b''
+    encoding = 'utf-8' if encoding == 'utf-8-sig' else encoding
+    content = data.decode(encoding)
+    if '\x00' in content:
+        raise ValueError('The file contains NUL characters in this encoding.')
+    newline = '\r\n' if '\r\n' in content else '\r' if '\r' in content else '\n'
+    return TextCopy(content, encoding, bom, newline)
 
 
 def decode_text_preview(data: bytes) -> str:
@@ -228,13 +254,54 @@ def delete_remote_tree(backend, name, *, cancelled=lambda: False):
     return removed
 
 
+@dataclass(frozen=True)
+class RemoteSearch:
+    name: str = ''
+    wildcard: bool = False
+    extensions: tuple[str, ...] = ()
+    minimum: int | None = None
+    maximum: int | None = None
+    modified_from: float | None = None
+    modified_until: float | None = None
+
+    @classmethod
+    def from_fields(cls, name, wildcard, extensions, minimum, maximum, since, until):
+        suffixes = tuple('.' + value.casefold().lstrip('.') for value in extensions.replace(',', ' ').split())
+        lower = int(minimum) if minimum.strip() else None
+        upper = int(maximum) if maximum.strip() else None
+        start = date.fromisoformat(since.strip()) if since.strip() else None
+        end = date.fromisoformat(until.strip()) if until.strip() else None
+        if any(value is not None and value < 0 for value in (lower, upper)):
+            raise ValueError('Sizes must be non-negative bytes.')
+        if lower is not None and upper is not None and lower > upper:
+            raise ValueError('Minimum size must be at most the maximum size.')
+        if start and end and start > end:
+            raise ValueError('The start date must be at most the end date.')
+        if not name.strip() and not suffixes and all(value is None for value in (lower, upper, start, end)):
+            raise ValueError('Enter at least one search criterion.')
+        return cls(name.strip().casefold(), wildcard, suffixes, lower, upper,
+                   datetime.combine(start, time.min, timezone.utc).timestamp() if start else None,
+                   (datetime.combine(end, time.min, timezone.utc) + timedelta(days=1)).timestamp() if end else None)
+
+    def matches(self, entry, name):
+        folded = name.casefold()
+        if self.name and not (fnmatchcase(folded, self.name) if self.wildcard else self.name in folded):
+            return False
+        if self.extensions and (entry.is_dir or not folded.endswith(self.extensions)):
+            return False
+        size = None if entry.is_dir else entry.size
+        modified = getattr(entry, 'modified', None)
+        return ((self.minimum is None or size is not None and size >= self.minimum)
+                and (self.maximum is None or size is not None and size <= self.maximum)
+                and (self.modified_from is None or modified is not None and modified >= self.modified_from)
+                and (self.modified_until is None or modified is not None and modified < self.modified_until))
+
+
 def find_remote(backend, root: str, term: str, *, cancelled=lambda: False,
                 max_results: int = MAX_SEARCH_RESULTS, max_entries: int = MAX_SEARCH_ENTRIES,
                 max_depth: int = MAX_SEARCH_DEPTH):
     """Case-insensitive filename search; avoid symlink recursion and restore cwd."""
-    term = term.strip().casefold()
-    if not term:
-        raise ValueError('Enter a search term')
+    query = term if isinstance(term, RemoteSearch) else RemoteSearch.from_fields(term, False, '', '', '', '', '')
     if not root.startswith('/'):
         raise ValueError('Search root must be absolute')
     initial = backend.pwd()
@@ -254,7 +321,7 @@ def find_remote(backend, root: str, term: str, *, cancelled=lambda: False,
                 if inspected > max_entries:
                     raise ValueError('Search entry limit reached; narrow the search folder')
                 absolute = posixpath.join(folder, name)
-                if term in name.casefold():
+                if query.matches(entry, name):
                     found.append((absolute, bool(entry.is_dir), entry.size))
                     if len(found) >= max_results: return found
                 if entry.is_dir and depth < max_depth:

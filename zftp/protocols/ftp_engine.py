@@ -1,6 +1,7 @@
 """FTP/FTPS backend. No persistent credential storage."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import ftplib
 import posixpath
 import ssl
@@ -15,6 +16,29 @@ class RemoteEntry:
     is_dir: bool
     size: int | None = None
     is_link: bool = False
+    modified: float | None = None
+
+
+def ftp_modified(value):
+    try:
+        return datetime.strptime(value.split('.')[0], '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def unix_list_modified(fields):
+    months = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split()
+    try:
+        month, day, clock = fields
+        month, day = months.index(month.title()) + 1, int(day)
+        if ':' not in clock:
+            return datetime(int(clock), month, day, tzinfo=timezone.utc).timestamp()
+        hour, minute = map(int, clock.split(':'))
+        now = datetime.now(timezone.utc)
+        year = now.year - int((month, day) > (now.month, now.day))
+        return datetime(year, month, day, hour, minute, tzinfo=timezone.utc).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 class FTPBackend:
@@ -142,7 +166,8 @@ class FTPBackend:
                 if typ in ('cdir', 'pdir'):
                     continue
                 size = int(facts['size']) if facts.get('size', '').isdigit() else None
-                entries.append(RemoteEntry(name, typ == 'dir', size, typ in ('OS.unix=slink', 'slink', 'link')))
+                entries.append(RemoteEntry(name, typ == 'dir', size, typ.lower().split(':', 1)[0] in ('os.unix=slink', 'slink', 'link'),
+                                           ftp_modified(facts.get('modify', ''))))
             self._mlsd_supported = True
             return sorted(entries, key=lambda x: (not x.is_dir, x.name.casefold()))
         except (ftplib.error_perm, ftplib.error_reply, AttributeError):
@@ -170,7 +195,8 @@ class FTPBackend:
                 name = name.partition(' -> ')[0]
             if name not in ('.', '..'):
                 size = int(parts[4]) if parts[4].isdigit() else None
-                entries.append(RemoteEntry(name, parts[0][0] == 'd', size, parts[0][0] == 'l'))
+                entries.append(RemoteEntry(name, parts[0][0] == 'd', size, parts[0][0] == 'l',
+                                           unix_list_modified(parts[5:8])))
         return sorted(entries, key=lambda x: (not x.is_dir, x.name.casefold()))
 
     def mkdir(self, name: str):

@@ -15,7 +15,15 @@ class SimulatedFTPConnection:
     def __init__(self):
         self.files = {}
         self.command_log = []
+    def voidcmd(self, command):
+        if command != 'TYPE I':
+            raise AssertionError(f'Unexpected transfer command {command}')
+        self.binary_mode = True
+        return '200 Type set to I'
+
     def size(self, name):
+        if not getattr(self, 'binary_mode', False):
+            raise AssertionError('SIZE requires binary mode')
         import ftplib
         if name not in self.files:
             raise ftplib.error_perm('550 missing')

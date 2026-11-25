@@ -53,10 +53,14 @@ class ShutdownControlsMixin:
         if not state.request_close():
             QMessageBox.information(self, 'Session busy', 'Cancel or finish the operation on this tab before closing it.')
             return
-        self.queue.cancel_pending_for(str(id(tab)))
-        for cancelled_job in self.queue.jobs:
-            if cancelled_job.session_id == str(id(tab)) and cancelled_job.status == 'Cancelled':
-                self.record_transfer(cancelled_job, state)
+        session_id = str(id(tab))
+        if not self._quit_requested and not self.queue_recovery.load_error:
+            self.queue_recovery.defer_pending(self.queue, session_id, state)
+        else:
+            self.queue.cancel_pending_for(session_id)
+            for cancelled_job in self.queue.jobs:
+                if cancelled_job.session_id == session_id and cancelled_job.status == 'Cancelled':
+                    self.record_transfer(cancelled_job, state)
         self.render_queue()
         tab.status.setText('Disconnecting…')
         tab.set_controls()
@@ -73,7 +77,7 @@ class ShutdownControlsMixin:
             self.update_active()
             if error: self.log(f'Failed to cleanly disconnect {state.host}: {error}')
             else:
-                self.notify('info', 'Disconnected', state.host)
+                self.notify('info', 'Disconnected', state.host, category='connection')
         job.events.done.connect(lambda _: finish())
         job.events.failed.connect(finish)
         self.pool.start(job)
@@ -92,6 +96,7 @@ class ShutdownControlsMixin:
             self.close()
     def _finish_close(self, event):
         if self.launch_pending_updater():
+            self._queue_lock.unlock()
             event.accept()
         else:
             self._tray_force_quit = False
@@ -123,7 +128,7 @@ class ShutdownControlsMixin:
             response = QMessageBox.question(
                 self, 'Transfers still running',
                 'An FTP/SFTP operation is still running.\n\n'
-                'Cancel active operations and quit after they finish stopping safely?\n'
+                'Stop active operations safely and quit?\n'
                 'Incomplete uploads may remain as .zftp.part files.',
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if response != QMessageBox.Yes:
@@ -139,6 +144,7 @@ class ShutdownControlsMixin:
             return
         # Idle tabs disconnect automatically; waiting for a worker stays
         # asynchronous, preserving safe ownership of sockets and Qt signals.
+        self.checkpoint_queue(force=True)
         self._quit_requested = True
         self.statusBar().showMessage('Closing Z FTP: disconnecting servers safely…')
         self._quit_timer.start()

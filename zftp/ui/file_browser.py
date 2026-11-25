@@ -29,8 +29,8 @@ from zftp.ui.transfer_tables import TransferTable
 from zftp.transfers.reliable_transfer import TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
 from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (
-    RemoteConflictError, RemoteDirectoryRestoreError, delete_remote_tree, find_remote,
-    read_editor_snapshot, safe_save_editor, validate_name,
+    RemoteConflictError, RemoteDirectoryRestoreError, RemoteSearch, delete_remote_tree, find_remote,
+    validate_name,
 )
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
@@ -63,7 +63,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
     def set_local_path(self, path):
         path = Path(path)
         generation = self._local_render_gate.new()
-        self.local_label.setText('Loading local: ' + str(path))
+        self.update_local_caption('Loading local: ' + str(path))
         job = Job(lambda _: scan_directory(path))
         self.jobs.append(job)
         def finish():
@@ -72,7 +72,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
         def failed(error):
             finish()
             if self._local_render_gate.current(generation):
-                self.local_label.setText('Local: ' + str(self.local_path))
+                self.update_local_caption('Local: ' + str(self.local_path))
                 QMessageBox.warning(self, 'Local folder', str(error))
         def ready(entries):
             finish()
@@ -80,7 +80,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
                 return
             self.local_path = path
             self.local_table.local_directory = path
-            self.local_label.setText('Local: ' + str(path))
+            self.update_local_caption('Local: ' + str(path))
             table = self.local_table
             table.setUpdatesEnabled(False)
             table.setSortingEnabled(False)
@@ -376,7 +376,10 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
         tab.table.remote_session_id = str(id(tab))
         tab.table.filesDropped.connect(lambda paths, t=tab: self.enqueue_local_items(t, paths))
         self.sessions[tab] = state
-        index = self.tabs.addTab(tab, f'{protocol} {host}')
+        self._connection_values.update((host, username))
+        tab.display_text = self.private_text
+        index = self.tabs.addTab(tab, f'{protocol} · Server')
+        self.update_private_tab(tab)
         self.tabs.setCurrentIndex(index)
         tab.table.remote_directory = state.remote_path
         tab.up.clicked.connect(lambda: self.navigate(tab, parent_remote(state.remote_path)))
@@ -425,11 +428,12 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             tab.show_entries()
             if self.connection_setup.isVisible():
                 self.toggle_connection_setup()
-            self.notify('success', 'Connected', f'{protocol} · {host}:{port}')
+            self.restore_queue(tab)
+            self.notify('success', 'Connected', f'{protocol} · {host}:{port}', category='connection')
         def on_error(exc):
             if isinstance(exc, UntrustedHostKey):
                 reply = QMessageBox.question(self, 'Verify SSH server key',
-                    f'Server: {host}:{port}\nKey: {exc.key_type}\nFingerprint: {exc.fingerprint}\n\n'
+                    f'Server: {self.private_text(f"{host}:{port}")}\nKey: {exc.key_type}\nFingerprint: {exc.fingerprint}\n\n'
                     'Verify this fingerprint through a trusted channel. Trust for this session only?',
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if reply == QMessageBox.Yes:
@@ -446,7 +450,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
         state = self.sessions.get(tab)
         if not state or state.busy or state.closing: return False
         token = state.begin()
-        tab.status.setText(label)
+        tab.status.setText(self.private_text(label))
         tab.cancel.setProperty('transfer_active', transfer)
         if transfer: tab.progress.setRange(0, 100); tab.progress.setValue(0)
         tab.set_controls(); self.update_active()
@@ -487,10 +491,13 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             tab.set_controls(); self.update_active()
         def failed(exc):
             finish()
-            tab.status.setText('Failed: ' + str(exc))
-            self.notify('error', 'Operation failed', f'{state.host} · {label}: {exc}')
+            summary = ('The server could not be reached or sign-in failed.'
+                       if self.streamer_enabled and label.startswith('Connecting') else str(exc))
+            tab.status.setText(self.private_text('Failed: ' + summary))
+            self.notify('error', 'Operation failed', f'{state.host} · {label}: {summary}')
             if on_error and on_error(exc): return
-            QMessageBox.warning(self, 'Z FTP operation failed', str(exc))
+            QMessageBox.warning(self, 'Z FTP operation failed',
+                                    'See Activity for the masked error.' if self.streamer_enabled else str(exc))
             # Interrupted data connections can invalidate the protocol session.
             if transfer:
                 self.close_tab(tab)
@@ -615,7 +622,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
                 if data.startswith((SQLITE_HEADER, b'bplist00', *ZIP_MAGIC)):
                     QMessageBox.warning(self, 'Could not open text in VS Code', 'This file contains binary data.')
                     return
-                location = f'{state.host} · {posixpath.join(folder, name)}'
+                location = self.private_text(f'{state.host} · {posixpath.join(folder, name)}')
                 try:
                     dialog = ExternalEditorDialog(self, name, location, data, external_editor, save)
                 except (OSError, ValueError) as error:
@@ -773,36 +780,8 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
         if name.lower().endswith('.sfo'):
             self.edit_remote_sfo(tab, state, name)
             return
-        def opened(snapshot):
-            if tab not in self.sessions: return
-            dialog = QDialog(self); dialog.setWindowTitle('Remote editor — ' + name)
-            dialog.resize(850, 620)
-            layout = QVBoxLayout(dialog)
-            layout.addWidget(QLabel('UTF-8 text · Changes are checked before save · Original is backed up remotely'))
-            editor = QPlainTextEdit(); editor.setPlainText(snapshot.text)
-            layout.addWidget(editor)
-            buttons = QHBoxLayout()
-            save = QPushButton('Save with backup'); cancel = QPushButton('Cancel')
-            buttons.addStretch(1); buttons.addWidget(save); buttons.addWidget(cancel)
-            layout.addLayout(buttons)
-            cancel.clicked.connect(dialog.reject)
-            save.clicked.connect(dialog.accept)
-            if dialog.exec() != QDialog.Accepted or editor.toPlainText() == snapshot.text: return
-            revised = editor.toPlainText()
-            if QMessageBox.question(self, 'Confirm remote edit',
-                 'Save edited text to this server? The previous version will remain as a remote backup.') != QMessageBox.Yes:
-                return
-            def action(_):
-                backup = safe_save_editor(state.backend, snapshot, revised)
-                return backup, state.backend.list_dir()
-            def complete(result):
-                backup, entries = result
-                self._replace_entries(tab, entries)
-                if backup:
-                    self.log(f'{state.host}: updated {name}; recovery backup {backup}')
-                    QMessageBox.information(self, 'Edit saved', f'Saved. Original preserved on server as:\n{backup}')
-            self.run_session_job(tab, 'Saving remote text with backup', action, complete)
-        self.run_session_job(tab, 'Opening remote text', lambda _: read_editor_snapshot(state.backend, name), opened)
+        self.preview_remote_file(tab, entry)
+
     def edit_remote_sfo(self, tab, state, name):
         def read(_):
             folder = state.backend.pwd()
@@ -823,7 +802,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             if revised == document.raw or self.sessions.get(tab) is not state or not state.connected:
                 return
             if QMessageBox.question(self, 'Confirm PARAM.SFO edit',
-                    f'Save changes to {state.host}{path}?\n\n'
+                    f'Save changes to {self.private_text(state.host + path)}?\n\n'
                     'The original will be kept as a backup in the same remote folder. '
                     'Altered metadata can affect how the console recognizes this item.',
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
@@ -854,8 +833,41 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
     def search_remote(self, tab):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.busy: return
-        query, ok = QInputDialog.getText(self, 'Recursive remote search', 'Filename contains')
-        if not ok or not query.strip(): return
+        options = QDialog(self)
+        options.setWindowTitle('Advanced remote search')
+        form = QFormLayout(options)
+        pattern = QLineEdit()
+        pattern.setPlaceholderText('Filename or pattern')
+        wildcard = QCheckBox('Match wildcards (*, ?, [abc])')
+        extensions = QLineEdit()
+        extensions.setPlaceholderText('For example pkg, tar.gz')
+        minimum, maximum, since, until = [QLineEdit() for _ in range(4)]
+        since.setPlaceholderText('YYYY-MM-DD')
+        until.setPlaceholderText('YYYY-MM-DD')
+        for label, field in (
+            ('Filename', pattern), ('', wildcard), ('Extensions', extensions),
+            ('Minimum bytes', minimum), ('Maximum bytes', maximum),
+            ('Modified on or after (UTC)', since), ('Modified on or before (UTC)', until),
+        ):
+            form.addRow(label, field)
+        note = QLabel('Size and date filters skip entries when the server has no matching metadata.')
+        note.setWordWrap(True)
+        form.addRow(note)
+        run = QPushButton('Search')
+        form.addRow(run)
+        run.clicked.connect(options.accept)
+        run.setDefault(True)
+        while options.exec() == QDialog.Accepted:
+            try:
+                query = RemoteSearch.from_fields(pattern.text(), wildcard.isChecked(), extensions.text(),
+                                                 minimum.text(), maximum.text(), since.text(), until.text())
+                break
+            except (ValueError, OverflowError, OSError) as error:
+                QMessageBox.warning(options, 'Invalid search filters', str(error))
+        else:
+            options.deleteLater()
+            return
+        options.deleteLater()
         root = state.remote_path
         def after(results):
             dialog = QDialog(self); dialog.setWindowTitle(f'Search results — {query}')
@@ -864,7 +876,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             layout.addWidget(QLabel(f'{len(results)} result(s) under {root} (limit 2000)'))
             listing = QListWidget()
             for path, is_dir, size in results:
-                listing.addItem(('Folder  ' if is_dir else 'File       ') + path)
+                listing.addItem(self.private_text(('Folder  ' if is_dir else 'File       ') + path))
             layout.addWidget(listing)
             close = QPushButton('Close'); close.clicked.connect(dialog.accept)
             layout.addWidget(close); dialog.exec()

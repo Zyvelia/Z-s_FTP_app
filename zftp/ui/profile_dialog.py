@@ -21,6 +21,9 @@ class ProfileDialog(QDialog):
         self.save_password = QCheckBox('Save password in operating system credential store')
         self.save_password.setChecked(profile.save_password if profile else False)
         self.password = QLineEdit(); self.password.setEchoMode(QLineEdit.Password)
+        if getattr(parent, 'streamer_enabled', False):
+            for field in (self.name, self.host, self.port, self.username, self.key_path):
+                field.setEchoMode(QLineEdit.Password)
         self.password.setPlaceholderText('Leave blank to keep stored password' if profile and profile.save_password else 'Optional password')
         form.addRow('Profile name', self.name)
         form.addRow('Protocol', self.protocol)

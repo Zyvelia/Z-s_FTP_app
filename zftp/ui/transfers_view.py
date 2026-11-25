@@ -291,7 +291,42 @@ class TransfersViewMixin:
                         and all(isinstance(n, str) for n in names)):
                     self.enqueue_remote_items(tab, names)
                 return
+    def checkpoint_queue(self, *, force=False):
+        if self._quit_requested or self.queue_recovery.load_error:
+            return
+        pending = tuple((job.id, job.session_id, job.count // 32 if job.children else 0, job.verify_sha256)
+                        for job in self.queue.jobs if job.status in ('Queued', 'Running'))
+        key = pending, tuple(record['plan']['id'] for record in self.queue_recovery.waiting)
+        if not force and key == self._queue_checkpoint:
+            return
+        try:
+            self.queue_recovery.save(self.queue.jobs, {str(id(tab)): state for tab, state in self.sessions.items()})
+        except OSError as error:
+            if not self._queue_save_warning:
+                self.log(f'Could not save the recovery queue: {error}')
+            self._queue_save_warning = True
+        else:
+            self._queue_save_warning = False
+            self._queue_checkpoint = key
+
+    def restore_queue(self, tab):
+        restored, blocked = self.queue_recovery.restore(self.queue, str(id(tab)), tab.state)
+        if restored or blocked:
+            self.log(f'Recovered {restored} queued transfer(s) · {blocked} waiting due to destination conflicts')
+            self.render_queue()
+
+    def set_queue_paused(self, paused):
+        self.queue.paused = paused
+        self.preferences.setValue('queue/paused', paused)
+        self.queue_pause_button.setText('Resume queue' if paused else 'Pause queue')
+        self.refresh_live_footer()
+        self.refresh_tray_status()
+        if not paused:
+            for tab in tuple(self.sessions):
+                self.pump_queue(tab)
+
     def render_queue(self):
+        self.checkpoint_queue()
         current = self.queue.jobs
         running = next((job for job in current if job.status == 'Running'), None)
         featured = running
@@ -321,7 +356,7 @@ class TransfersViewMixin:
         self.queue_table.setRowCount(len(current))
         for row, item in enumerate(current):
             tab = next((t for t in self.sessions if str(id(t)) == item.session_id), None)
-            host = tab.state.host if tab else '(disconnected)'
+            host = self.private_text(tab.state.host) if tab else '(disconnected)'
             pct = (f'{min(100, item.count * 100 // item.total)}%' if item.total else
                    ('—' if item.status == 'Queued' else f'{item.count:,} bytes'))
             speed = getattr(item, 'speed_bps', 0.)
@@ -346,9 +381,9 @@ class TransfersViewMixin:
                                          stage + (': ' + item.error if item.error else ''))):
                 if col == 3:
                     continue  # Progress is a proper widget rather than text-only.
-                cell = QTableWidgetItem(value)
+                cell = QTableWidgetItem(self.private_text(value))
                 if col == 2 and item.direction == 'download':
-                    cell.setToolTip(item.destination)
+                    cell.setToolTip(self.private_text(item.destination))
                 if col == 7:
                     if item.status == 'Completed':
                         cell.setForeground(QColor('#7ce0ac'))
@@ -356,7 +391,7 @@ class TransfersViewMixin:
                         cell.setForeground(QColor('#ffa0ab'))
                     elif item.status == 'Running':
                         cell.setForeground(QColor('#d9b3ff'))
-                    cell.setToolTip(f'{item.status}: {stage}' + (f' — {item.error}' if item.error else ''))
+                    cell.setToolTip(self.private_text(f'{item.status}: {stage}' + (f' — {item.error}' if item.error else '')))
                 self.queue_table.setItem(row, col, cell)
             widget = QWidget()
             bar_row = QHBoxLayout(widget)
@@ -426,7 +461,7 @@ class TransfersViewMixin:
                 limit = 0
         item = self.queue.next_for(sid, download_limit=limit)
         if item is None: return
-        item.verify_sha256 = self.verify_checksums.isChecked()
+        item.verify_sha256 = self.verify_checksums.isChecked() or (item.recovered and item.verify_sha256)
         background = parallel and item.direction in DOWNLOADS
         cancellation = Event() if background else None
         if background:
@@ -560,7 +595,11 @@ class TransfersViewMixin:
                         next_update = now + 0.15
 
                 try:
-                    size, _ = perform(child, child_progress)
+                    if item.recovered and child.direction == 'download' and (target.exists() or target.is_symlink()):
+                        item.skipped += 1
+                        size = 0
+                    else:
+                        size, _ = perform(child, child_progress)
                 except InterruptedError:
                     raise
                 except Exception as exc:
@@ -579,9 +618,12 @@ class TransfersViewMixin:
                 summary = f'{item.name} · {len(item.children)} items · {item.destination}'
                 if item.skipped:
                     summary += f' · {item.skipped} skipped'
-                self.notify('success', 'Folder download complete', summary)
+                self.notify('success', 'Folder download complete', summary, category='completion',
+                            download_dir=Path(item.destination), download_name=item.name)
             else:
-                self.notify('success', 'Transfer complete', f'{item.name} · {item.direction}')
+                self.notify('success', 'Transfer complete', f'{item.name} · {item.direction}', category='completion',
+                            download_dir=Path(item.destination).parent if item.direction == 'download' else None,
+                            download_name=item.name)
             self.render_queue()
             if item.direction in ('download', 'mkdir_local', 'download_folder'):
                 if self.local_path == Path(item.local_dir): self.set_local_path(self.local_path)
@@ -594,12 +636,17 @@ class TransfersViewMixin:
             self.queue.finish(item, exc)
             self.record_transfer(item, state)
             self.render_queue()
-            # Interrupted transfer can leave FTP/SFTP channel state uncertain.
-            # Stop only this session's pending jobs and close it after the worker ends.
-            self.queue.cancel_pending_for(sid)
-            for cancelled_job in self.queue.jobs:
-                if cancelled_job.session_id == sid and cancelled_job.status == 'Cancelled':
-                    self.record_transfer(cancelled_job, state)
+            if item.recovered and isinstance(exc, FileExistsError):
+                # A completed destination may have been published right before a crash.
+                return True
+            # A failed data connection may leave its control session unusable.
+            if not isinstance(exc, InterruptedError) and not self.queue_recovery.load_error:
+                self.queue_recovery.defer_pending(self.queue, sid, state)
+            else:
+                self.queue.cancel_pending_for(sid)
+                for cancelled_job in self.queue.jobs:
+                    if cancelled_job.session_id == sid and cancelled_job.status == 'Cancelled':
+                        self.record_transfer(cancelled_job, state)
             self.render_queue()
             return False
 
@@ -669,7 +716,10 @@ class TransfersViewMixin:
         if isinstance(count, FolderProgress):
             item.folder_progress = count
             item.phase = count.status
+            previous = item.count
             self.queue.progress(item, count.items_done, len(item.children))
+            if item.count // 32 != previous // 32:
+                self.checkpoint_queue()
             count, total = count.bytes_done, count.bytes_total
         if isinstance(count, str) and count.startswith('@stage:'):
             item.phase = count[7:]

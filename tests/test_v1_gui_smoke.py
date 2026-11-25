@@ -345,6 +345,63 @@ class GUIv1SmokeTests(unittest.TestCase):
                 saved(backup)
             self.assertFalse(path.exists())
 
+    def test_text_editor_can_reopen_utf16_and_jump_to_line(self):
+        from PySide6.QtWidgets import QInputDialog
+        from zftp.ui.file_preview import FilePreviewDialog
+
+        raw = 'key=first\r\n[section]\r\nkey=second'.encode('utf-16-le')
+        dialog = FilePreviewDialog('settings.ini', raw, Mock())
+        self.addCleanup(dialog.close)
+        dialog.encoding.setCurrentIndex(dialog.encoding.findData('utf-16-le'))
+        self.assertEqual(dialog.viewer.blockCount(), 3)
+        dialog.highlighter.rehighlight()
+        self.assertTrue(dialog.viewer.document().findBlockByNumber(1).layout().formats())
+        with patch.object(QInputDialog, 'getInt', return_value=(3, True)):
+            dialog.viewer.go_to_line()
+        self.assertEqual(dialog.viewer.textCursor().blockNumber(), 2)
+        self.assertEqual(dialog.text_copy.encode(dialog.viewer.toPlainText()), raw)
+
+    def test_streamer_mask_and_notification_settings(self):
+        from PySide6.QtCore import QSettings
+        from PySide6.QtWidgets import QLineEdit, QSystemTrayIcon
+
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = QSettings(str(Path(directory) / 'test.ini'), QSettings.IniFormat)
+            with patch('zftp.ui.main_window.QSettings', return_value=preferences):
+                window = MainWindow()
+            try:
+                window.host.setText('10.0.0.75')
+                window.user.setText('operator42')
+                window.password.setText('secret fixture')
+                window.log('operator42@10.0.0.75 connected')
+                window.streamer.setChecked(True)
+                for field in (window.host, window.user, window.password):
+                    self.assertEqual(field.echoMode(), QLineEdit.Password)
+                    self.assertNotEqual(field.displayText(), field.text())
+                self.assertNotIn('10.0.0.75', window.logs.toPlainText())
+                self.assertNotIn('operator42', window.logs.toPlainText())
+                self.assertNotIn('2001:db8::1', window.private_text('Peer [2001:db8::1]'))
+                tray, window.tray = window.tray, Mock()
+                with patch.object(QSystemTrayIcon, 'supportsMessages', return_value=True):
+                    window.toast_categories['connection'].setChecked(False)
+                    window.notify('info', 'Connected', window.host.text(), category='connection')
+                    window.tray.showMessage.assert_not_called()
+                    window.notify('success', 'Download complete', window.host.text(), category='completion',
+                                  download_dir=Path(directory), download_name='demo.txt')
+                    self.assertNotIn(window.host.text(), window.tray.showMessage.call_args.args[1])
+                    window.tray.showMessage.reset_mock()
+                    window.notifications_enabled.setChecked(False)
+                    window.notify('error', 'Download failed', 'test')
+                    window.tray.showMessage.assert_not_called()
+                with patch.object(window, 'open_download_folder') as open_folder:
+                    window.populate_completion_menu()
+                    window.completion_menu.actions()[0].trigger()
+                    open_folder.assert_called_once_with(Path(directory))
+                window.tray = tray
+            finally:
+                window._tray_force_quit = True
+                window.close()
+
     def test_folder_eta_and_bar_update_before_any_file_finishes(self):
         window = MainWindow()
         self.addCleanup(window.close)

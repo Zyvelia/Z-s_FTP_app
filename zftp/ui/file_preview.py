@@ -11,8 +11,9 @@ from PySide6.QtWidgets import (
 )
 
 from zftp.services.file_preview import HEX_LIMIT, SQLITE_HEADER, SQLiteCopy, is_text_name
-from zftp.services.remote_management import identify_text
+from zftp.services.remote_management import EDITOR_ENCODINGS, decode_editor_copy
 from zftp.ui.format_preview import show_delimited
+from zftp.ui.text_editor import TextEditor, TextHighlighter
 
 
 class FilePreviewDialog(QDialog):
@@ -21,6 +22,7 @@ class FilePreviewDialog(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle(name)
         self.resize(780, 530)
+        self.name = name
         self.data = data
         self.save = save
         self.writable = save is not None
@@ -64,29 +66,68 @@ class FilePreviewDialog(QDialog):
             self.table_select.currentTextChanged.connect(self._show_table)
             self._show_table(self.table_select.currentText())
         else:
-            self.viewer = QPlainTextEdit()
+            self.viewer = TextEditor()
             self.viewer.setReadOnly(True)
-            try:
-                self.text_copy = identify_text(data, strict_controls=not is_text_name(name))
-                content = self.text_copy.content
-                self.hint.setText('Text file')
-            except ValueError:
-                shown = data[:HEX_LIMIT]
-                content = '\n'.join(shown[i:i + 16].hex(' ') for i in range(0, len(shown), 16))
-                self.viewer.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
-                if len(data) > HEX_LIMIT:
-                    self.hint.setText('Hex preview of the first 64 KiB. This file is too large for hex editing.')
-                    self.edit.setEnabled(False)
-                else:
-                    self.hint.setText('Hex bytes. Edits must keep the original file size.')
-            self.viewer.setPlainText(content)
-            self.contents = self.viewer.toPlainText()
             layout.addWidget(self.viewer, 1)
-            if self.text_copy and Path(name).suffix.lower() in ('.csv', '.tsv'):
-                view_table = QPushButton('Preview table')
-                view_table.clicked.connect(lambda: show_delimited(self, name, self.viewer.toPlainText()))
-                buttons.insertWidget(0, view_table)
+            self.encoding = QComboBox()
+            self.encoding.setAccessibleName('File encoding')
+            for label, codec in EDITOR_ENCODINGS:
+                self.encoding.addItem(label, codec)
+            self.goto = QPushButton('Go to line…')
+            self.goto.clicked.connect(self.viewer.go_to_line)
+            self.table_button = QPushButton('Preview table')
+            self.table_button.clicked.connect(lambda: show_delimited(self, name, self.viewer.toPlainText()))
+            buttons.insertWidget(1, self.encoding)
+            buttons.insertWidget(2, self.goto)
+            buttons.insertWidget(3, self.table_button)
+            self.highlighter = TextHighlighter(self.viewer.document(), name)
+            self._encoding_index = 0
+            try:
+                self._load_copy(None)
+            except ValueError:
+                shown = self.data[:HEX_LIMIT]
+                self._display_text('\n'.join(shown[i:i + 16].hex(' ') for i in range(0, len(shown), 16)))
+            self.encoding.currentIndexChanged.connect(self._change_encoding)
         layout.addLayout(buttons)
+
+    def _load_copy(self, encoding):
+        self.text_copy = decode_editor_copy(self.data, encoding, strict_controls=not is_text_name(self.name))
+        self._display_text(self.text_copy.content)
+
+    def _display_text(self, content):
+        is_text = self.text_copy is not None
+        self.highlighter.setDocument(self.viewer.document() if is_text else None)
+        self.viewer.gutter.setVisible(is_text)
+        self.viewer.setPlainText(content)
+        self.contents = self.viewer.toPlainText()
+        self.goto.setVisible(is_text)
+        self.table_button.setVisible(is_text and Path(self.name).suffix.lower() in ('.csv', '.tsv'))
+        self.edit.setEnabled(not self.editing and (is_text or len(self.data) <= HEX_LIMIT))
+        self.encoding.setVisible(is_text or is_text_name(self.name))
+        if is_text:
+            self.hint.setText(f'Text file · {self.text_copy.encoding.upper()}')
+        elif len(self.data) > HEX_LIMIT:
+            self.hint.setText('Hex preview of the first 64 KiB. This file is too large for hex editing.')
+        else:
+            self.hint.setText('Hex bytes. Edits must keep the original file size.')
+
+    def _change_encoding(self, index):
+        previous = self._encoding_index
+        if self.editing and self.viewer.toPlainText() != self.contents:
+            if QMessageBox.question(self, 'Change encoding',
+                                    'Reload the original bytes using this encoding and discard unsaved edits?',
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                with QSignalBlocker(self.encoding):
+                    self.encoding.setCurrentIndex(previous)
+                return
+        try:
+            self._load_copy(self.encoding.itemData(index))
+        except ValueError as error:
+            QMessageBox.warning(self, 'Could not decode file', str(error))
+            with QSignalBlocker(self.encoding):
+                self.encoding.setCurrentIndex(previous)
+        else:
+            self._encoding_index = index
 
     def _enable_editing(self):
         self.editing = True
