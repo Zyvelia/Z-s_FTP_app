@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout,
 )
 
-from zftp.services.ps3_file_tools import CONFIG_LINE, inspect_pkg, missing_plugins, plugin_paths, scan_game_metadata
+from zftp.services.ps3_file_tools import CONFIG_LINE, inspect_pkg, missing_plugins, plugin_paths
 from zftp.services.remote_management import MAX_EDITOR_BYTES, RemoteConflictError, safe_save_remote_bytes, validate_name
 
 HEX_LIMIT = 64 * 1024
@@ -117,15 +117,9 @@ def decode_image(raw, *, replacement=False):
 
 class Ps3FileToolsMixin:
     def remote_ps3_tools(self, menu, tab, entry):
-        tools = menu.addMenu('PS3 file tools')
-        if entry is None or entry.is_dir:
-            if entry is None or not entry.is_link:
-                directory = entry.name if entry else '.'
-                tools.addAction('Browse game metadata', lambda: self.remote_game_metadata(tab, directory))
+        if entry is None or entry.is_dir or entry.is_link:
             return
-        if entry.is_link:
-            tools.setEnabled(False)
-            return
+        tools = menu.addMenu('File tools')
         name = entry.name.lower()
         if name.endswith(('.ini', '.cfg', '.conf')):
             tools.addAction('Edit config', lambda: self.open_ps3_tool(tab, entry, 'config'))
@@ -136,18 +130,6 @@ class Ps3FileToolsMixin:
         if name.endswith(('.png', '.jpg', '.jpeg')):
             tools.addAction('Preview image', lambda: self.open_ps3_tool(tab, entry, 'image'))
         tools.addAction('View / edit hex', lambda: self.open_ps3_tool(tab, entry, 'hex'))
-
-    def remote_game_metadata(self, tab, directory):
-        state = self.sessions.get(tab)
-        if state is None:
-            return
-        def read(_):
-            return scan_game_metadata(state.backend, validate_name(directory) if directory != '.' else directory)
-        def opened(result):
-            rows, limited = result
-            note = 'Showing the first 200 folders.' if limited else ''
-            table_view(self, 'Game metadata', ['Folder', 'Title', 'Title ID', 'Category', 'Version', 'Status'], rows, note)
-        self.run_session_job(tab, 'Reading game metadata', read, opened)
 
     def open_ps3_tool(self, tab, entry, tool):
         state = self.sessions.get(tab)
@@ -200,7 +182,7 @@ class Ps3FileToolsMixin:
             if not self.run_session_job(tab, 'Saving with backup', save, saved):
                 QMessageBox.information(self, 'Connection busy', 'Finish the current operation and reopen this file.')
 
-        self.run_session_job(tab, 'Opening PS3 file', read, opened)
+        self.run_session_job(tab, 'Opening remote file', read, opened)
 
     def _edit_ps3_tool(self, name, tool, raw):
         if tool == 'image':

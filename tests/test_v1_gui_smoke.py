@@ -305,6 +305,18 @@ class GUIv1SmokeTests(unittest.TestCase):
         window.render_queue()
         self.assertEqual(window.queue_table.item(0, 5).text(), 'Size unknown')
 
+    def test_file_tools_are_only_offered_for_files(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        menu = Mock()
+        window.remote_ps3_tools(menu, None, RemoteEntry('games', True))
+        window.remote_ps3_tools(menu, None, None)
+        menu.addMenu.assert_not_called()
+        window.remote_ps3_tools(menu, None, RemoteEntry('settings.ini', False))
+        menu.addMenu.assert_called_once_with('File tools')
+        self.assertEqual([call.args[0] for call in menu.addMenu.return_value.addAction.call_args_list],
+                         ['Edit config', 'View / edit hex'])
+
     def test_activity_combines_session_log_and_alerts(self):
         window = MainWindow()
         self.addCleanup(window.close)

@@ -26,7 +26,6 @@ from zftp.services.sessions import ConnectionSession
 from zftp.transfers.transfer_queue import TransferQueue, Transfer
 from zftp.ui.transfer_tables import TransferTable
 from zftp.transfers.reliable_transfer import TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
-from zftp.transfers.ps3_performance import benchmark_ftp_upload, PRESETS
 from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
@@ -380,18 +379,6 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             options.addWidget(control, 1, col)
             options.setColumnStretch(col, 1)
         advanced.addLayout(options)
-        ps3_controls = QHBoxLayout()
-        ps3_controls.setSpacing(6)
-        self.ps3_preset = QPushButton('PS3 Wi-Fi preset')
-        self.ps3_preset.setToolTip('FTP uploads: 256 KiB chunks, unlimited bandwidth. Keeps your SHA-256 setting.')
-        self.ps3_preset.clicked.connect(self.apply_ps3_preset)
-        ps3_controls.addWidget(self.ps3_preset)
-        self.ps3_benchmark = QPushButton('Benchmark PS3…')
-        self.ps3_benchmark.setToolTip('Upload and delete an 8 MiB random test file on the connected FTP server, after approval.')
-        self.ps3_benchmark.clicked.connect(self.benchmark_ps3)
-        ps3_controls.addWidget(self.ps3_benchmark)
-        ps3_controls.addStretch(1)
-        advanced.addLayout(ps3_controls)
         self.transfer_options.setVisible(False)
         self.transfer_options_toggle.toggled.connect(self.transfer_options.setVisible)
         self.transfer_options_toggle.toggled.connect(lambda state: self.transfer_options_toggle.setText('⚙ Settings  ▾' if state else '⚙ Settings  ▸'))
@@ -576,7 +563,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         if section == 'about':
             QMessageBox.information(self, 'About Z FTP',
                 'Z FTP v2.1.12\nFTP, FTPS and SFTP clients and servers. Optional NFSv3 hosting.\n'
-                'Includes optional PS3/mmCM compatibility and performance settings.')
+                'Includes transfer settings and remote file tools.')
             return
         for key, button in self.sidebar_buttons.items():
             selected = key == section

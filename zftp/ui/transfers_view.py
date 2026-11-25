@@ -27,7 +27,6 @@ from zftp.services.sessions import ConnectionSession
 from zftp.transfers.transfer_queue import DOWNLOADS, FolderProgress, TransferQueue, Transfer
 from zftp.ui.transfer_tables import TransferTable
 from zftp.transfers.reliable_transfer import TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
-from zftp.transfers.ps3_performance import benchmark_ftp_upload, PRESETS
 from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
@@ -408,66 +407,6 @@ class TransfersViewMixin:
         self.transfer_metrics = {key: value for key, value in self.transfer_metrics.items()
                                  if any(j.id == key for j in self.queue.jobs)}
         self.render_queue()
-    def apply_ps3_preset(self):
-        """Apply conservative throughput settings without lowering integrity checks."""
-        self.protocol_select.setCurrentText('FTP')
-        self.port.setText('21')
-        self.bandwidth_limit.setValue(0)
-        self.chunk_select.setCurrentIndex(self.chunk_select.findData(PRESETS['PS3 Wi-Fi (balanced)']))
-        self.retry_limit.setValue(3)
-        self.backoff_delay.setValue(1)
-        # Deliberately preserve SHA-256 and the user's username/password.
-        self.transfer_options_toggle.setChecked(True)
-        self.log('PS3 Wi-Fi preset: FTP, 256 KiB chunks, unlimited bandwidth; SHA-256 setting unchanged')
-        QMessageBox.information(self, 'PS3 Wi-Fi preset',
-            'Applied FTP port 21, 256 KiB transfer blocks and unlimited bandwidth.\n'
-            'Your username, password and SHA-256 verification setting were not changed.\n'
-            'If a PS3 tab is already connected, it keeps its existing protocol; '
-            'the chunk setting applies to newly started jobs.')
-    def benchmark_ps3(self):
-        """Actual FTP upload benchmark; run only in a session-owned worker."""
-        tab = self.tabs.currentWidget()
-        state = self.sessions.get(tab)
-        if not state or not state.connected or state.protocol != 'FTP':
-            QMessageBox.information(self, 'FTP benchmark',
-                'Connect to your PS3 using plain FTP and select its server tab first.')
-            return
-        sid = str(id(tab))
-        if state.busy or state.closing or any(
-                j.status in ('Queued', 'Running') and j.session_id == sid for j in self.queue.jobs):
-            QMessageBox.information(self, 'FTP benchmark',
-                'Finish or clear pending transfers for this server before benchmarking.')
-            return
-        answer = QMessageBox.question(self, 'Confirm PS3 upload benchmark',
-            'Upload 8 MiB of random data into the current remote folder, then delete '
-            'the test file? This uses your PS3 Wi-Fi connection and writes to its disk.\n\n'
-            'Cancellation or connection loss may leave a uniquely named '
-            'zftp_benchmark_*.bin or .zftp.part file requiring manual cleanup. '
-            'Do not run this while another PS3 FTP client is changing files.',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if answer != QMessageBox.Yes:
-            return
-        settings = TransferSettings(0, 0, 0, self.chunk_select.currentData())
-        origin = state.remote_path
-        def perform(progress):
-            backend = state.backend
-            original = backend.pwd()
-            try:
-                backend.cwd(origin)
-                return benchmark_ftp_upload(backend, settings=settings,
-                    cancelled=lambda: state.cancelled, progress=progress)
-            finally:
-                try: backend.cwd(original)
-                except (OSError, EOFError, RuntimeError): pass
-        def done(result):
-            message = (f'{result.mib_per_second:.2f} MiB/s over {result.elapsed_seconds:.1f} seconds '
-                       f'({result.byte_count // (1024 * 1024)} MiB uploaded).\n'
-                       f'Remote test-file cleanup: {"confirmed" if result.remote_cleanup else "UNCONFIRMED"}.')
-            self.log('PS3 Wi-Fi benchmark: ' + message.replace('\n', ' '))
-            QMessageBox.information(self, 'PS3 upload benchmark', message)
-            self.refresh(tab)
-        self.run_session_job(tab, 'PS3 benchmark (8 MiB test upload)', perform,
-            done, transfer=True)
     def pump_queue(self, tab):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.busy or state.closing or self._quit_requested: return

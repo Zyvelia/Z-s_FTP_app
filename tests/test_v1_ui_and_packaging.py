@@ -22,6 +22,52 @@ class ThemeTests(unittest.TestCase):
 
 
 class PackagingTests(unittest.TestCase):
+    def test_notification_sender_matches_the_windows_shortcuts(self):
+        import re
+        entry_point = (ROOT / 'main.py').read_text(encoding='utf-8')
+        installer = (ROOT / 'packaging' / 'ZFTP.iss').read_text(encoding='utf-8')
+        app_id = re.search(r'^WINDOWS_APP_ID = "([^"]+)"', entry_point, re.MULTILINE)
+        self.assertIsNotNone(app_id)
+        self.assertIn(f'#define AppUserModelID "{app_id[1]}"', installer)
+        self.assertEqual(installer.count('AppUserModelID: "{#AppUserModelID}"'), 2)
+        self.assertIn('ValueName: "DisplayName"; ValueData: "{#AppName}"', installer)
+        self.assertLess(entry_point.index('    register_windows_notification_identity(icon)'),
+                        entry_point.index('    app = QApplication(sys.argv)'))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Requires the Windows shell')
+    def test_windows_process_registers_the_notification_sender(self):
+        import ctypes
+        from uuid import uuid4
+        import winreg
+        from unittest.mock import patch
+
+        from main import APP_NAME, WINDOWS_APP_ID, register_windows_notification_identity
+
+        key_path = f'Software\\ZFTP-Test-{uuid4().hex}'
+        icon = ROOT / 'assets' / 'zftp_icon.png'
+        value = ctypes.c_wchar_p()
+        try:
+            with patch('main.WINDOWS_APP_KEY', key_path):
+                register_windows_notification_identity(icon)
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                self.assertEqual(winreg.QueryValueEx(key, 'DisplayName')[0], APP_NAME)
+                self.assertEqual(winreg.QueryValueEx(key, 'IconUri')[0], str(icon))
+            get_id = ctypes.WinDLL('shell32').GetCurrentProcessExplicitAppUserModelID
+            get_id.argtypes = (ctypes.POINTER(ctypes.c_wchar_p),)
+            get_id.restype = ctypes.c_long
+            self.assertEqual(get_id(ctypes.byref(value)), 0)
+            self.assertEqual(value.value, WINDOWS_APP_ID)
+        finally:
+            if value:
+                free = ctypes.WinDLL('ole32').CoTaskMemFree
+                free.argtypes = (ctypes.c_void_p,)
+                free.restype = None
+                free(ctypes.cast(value, ctypes.c_void_p))
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
+            except FileNotFoundError:
+                pass
+
     def test_batch_builds_include_error_checks(self):
         exe = (ROOT / 'build_exe.bat').read_text(encoding='utf-8')
         installer = (ROOT / 'build_installer.bat').read_text(encoding='utf-8')

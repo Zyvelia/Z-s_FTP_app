@@ -65,6 +65,10 @@ jobs:
           if (!(Select-String -LiteralPath (Join-Path $installDir 'zftp-version.ini') -Pattern "^Version=$([regex]::Escape($version))$")) {
             throw 'The installed version is incorrect'
           }
+          $sender = Get-ItemProperty -LiteralPath 'HKCU:\Software\Classes\AppUserModelId\Zyvelia.ZFTP'
+          if ($sender.DisplayName -cne 'Z FTP' -or !(Test-Path -LiteralPath $sender.IconUri)) {
+            throw 'Z FTP notification sender was not registered with its name and icon'
+          }
           & (Join-Path $installDir 'Update-ZFTP.ps1') -CheckOnly
           if (!$?) { throw 'The updater check failed' }
       - name: Upload installer for manual build

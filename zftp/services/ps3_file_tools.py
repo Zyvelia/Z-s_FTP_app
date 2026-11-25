@@ -4,11 +4,9 @@ import posixpath
 import re
 from struct import unpack_from
 
-from zftp.services.param_sfo import ParamSfo
 from zftp.services.remote_management import validate_name
 
 CONFIG_LINE = re.compile(r'^([ \t]*[^\s#;=][^=\r\n]*?[ \t]*=[ \t]*)([^\r\n]*)(\r?\n|\r)?$')
-MAX_SCAN = 200
 
 
 def inspect_pkg(header, listing_size):
@@ -58,29 +56,3 @@ def missing_plugins(backend, paths):
     finally:
         backend.cwd(initial)
     return missing
-
-
-def scan_game_metadata(backend, folder):
-    initial = backend.pwd()
-    rows = []
-    try:
-        backend.cwd(folder)
-        root = backend.pwd()
-        directories = [entry.name for entry in backend.list_dir() if entry.is_dir and not entry.is_link]
-        for name in directories[:MAX_SCAN]:
-            validate_name(name)
-            try:
-                backend.cwd(posixpath.join(root, name))
-                entry = next((item for item in backend.list_dir()
-                              if item.name.upper() == 'PARAM.SFO' and not item.is_dir and not item.is_link), None)
-                if entry is None:
-                    continue
-                doc = ParamSfo(backend.read_bytes(validate_name(entry.name), 1024 * 1024))
-                fields = {field.name: field.value for field in doc.fields}
-                rows.append((name, fields.get('TITLE', ''), fields.get('TITLE_ID', ''),
-                             fields.get('CATEGORY', ''), fields.get('APP_VER') or fields.get('VERSION', ''), ''))
-            except Exception as exc:
-                rows.append((name, '', '', '', '', str(exc)))
-        return rows, len(directories) > MAX_SCAN
-    finally:
-        backend.cwd(initial)

@@ -28,8 +28,8 @@ TOPICS = (
         ('Settings', 'Adjust the bandwidth limit, retry count, backoff, and chunk size in transfer settings. Full SHA-256 verification is off by default. Turn it on for a full checksum comparison, which reads the remote file again.'),
         ('Activity and history', 'Activity shows session events and alerts in one feed. Click History above the transfer queue to see saved transfer outcomes or export them as CSV. Toggle desktop notifications in the status bar.'),
     )),
-    ('PS3 file tools', (
-        ('Identify a game', 'Right-click PARAM.SFO and choose View / edit PARAM.SFO to see TITLE, TITLE_ID, CATEGORY, and other fields. Right-click a games folder and choose PS3 file tools → Browse game metadata to see several titles in one list.'),
+    ('File tools', (
+        ('Identify a game', 'Right-click PARAM.SFO and choose View / edit PARAM.SFO to see TITLE, TITLE_ID, CATEGORY, and other fields.'),
         ('Inspect', 'Inspect PKG header shows the Content ID and declared size. Preview image opens PNG and JPEG files, including ICON0.PNG.'),
         ('Edit', 'Edit config changes existing key/value entries. Edit boot plugins checks listed paths. The hex editor supports same-length changes, and the image preview can replace ICON0.PNG. Remote edits keep a backup in the same folder.'),
     )),

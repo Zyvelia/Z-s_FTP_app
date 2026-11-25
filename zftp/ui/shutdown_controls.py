@@ -25,7 +25,6 @@ from zftp.services.sessions import ConnectionSession
 from zftp.transfers.transfer_queue import TransferQueue, Transfer
 from zftp.ui.transfer_tables import TransferTable
 from zftp.transfers.reliable_transfer import TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
-from zftp.transfers.ps3_performance import benchmark_ftp_upload, PRESETS
 from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel

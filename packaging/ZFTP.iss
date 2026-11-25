@@ -1,5 +1,6 @@
 #define AppName "Z FTP"
 #define AppVersion "2.1.12"
+#define AppUserModelID "Zyvelia.ZFTP"
 [Setup]
 AppId={{77CD47FA-45F5-467F-A93B-676F2DC0A635}
 AppName={#AppName}
@@ -24,12 +25,15 @@ Source: "..\Update-ZFTP.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Update-ZFTP.bat"; DestDir: "{app}"; Flags: ignoreversion
 [INI]
 Filename: "{app}\zftp-version.ini"; Section: "ZFTP"; Key: "Version"; String: "{#AppVersion}"
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\{#AppUserModelID}"; ValueType: string; ValueName: "DisplayName"; ValueData: "{#AppName}"; Flags: uninsdeletevalue uninsdeletekeyifempty
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\{#AppUserModelID}"; ValueType: string; ValueName: "IconUri"; ValueData: "{app}\_internal\assets\zftp_icon.png"; Flags: uninsdeletevalue uninsdeletekeyifempty
 [UninstallDelete]
 Type: files; Name: "{app}\zftp-version.ini"
 [Icons]
 Name: "{autoprograms}\Z FTP - Check for updates"; Filename: "{cmd}"; Parameters: "/D /C """"{app}\Update-ZFTP.bat"""""; WorkingDir: "{app}"; IconFilename: "{app}\ZFTP.exe"
-Name: "{autoprograms}\Z FTP"; Filename: "{app}\ZFTP.exe"; IconFilename: "{app}\ZFTP.exe"
-Name: "{autodesktop}\Z FTP"; Filename: "{app}\ZFTP.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Z FTP"; Filename: "{app}\ZFTP.exe"; IconFilename: "{app}\ZFTP.exe"; AppUserModelID: "{#AppUserModelID}"
+Name: "{autodesktop}\Z FTP"; Filename: "{app}\ZFTP.exe"; Tasks: desktopicon; AppUserModelID: "{#AppUserModelID}"
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 [Run]
