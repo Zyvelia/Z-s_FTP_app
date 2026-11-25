@@ -42,6 +42,8 @@ Transfers skip the extra checksum pass by default. Enable **Full SHA-256 verific
 
 Double-click a remote `.txt`, `.log`, `.logs`, `.ini`, `.db`, or `.dat` file to open its viewer. Local files with those extensions open the same way, with local `.txt` files using your default text app. Click **Edit**, then **Save with backup**. The editor recognizes text and SQLite by their contents and shows other binary data as hex. Text files are limited to 1 MiB, database and data files to 8 MiB, and binary edits to 64 KiB. Hex edits keep the same byte count. SQLite shows up to 100 rows per table and supports editing existing values in ordinary tables with row IDs.
 
+To use Visual Studio Code for a remote text file, right-click it and choose **Edit in VS Code**. Save the temporary copy in VS Code, then return to Z FTP and click **Review changes** and **Upload reviewed changes**. Z FTP keeps the original as a backup and checks that the remote file still matches the copy you opened. Double-click opens the built-in viewer. External editing supports text files up to 1 MiB.
+
 ### Browse other file formats
 
 Double-click **ZIP, 7z, RAR, TAR, and TAR.GZ/TGZ** archives to list entries and preview files up to 1 MiB. Large remote archives use FTP or SFTP ranges when supported. Compressed RAR entries use the Windows system tar utility, 7-Zip, or UnRAR. **DDS** and other raster images open in the image viewer. **WAV, OGG, and MP4** open in a media player with a 64 MiB limit for remote playback.

@@ -48,6 +48,7 @@ from zftp.services.file_preview import (
     MEDIA_LIMIT, OPAQUE_SUFFIXES, SQLITE_HEADER, can_preview, preview_limit, read_local_copy, save_local_copy, sqlite_sidecars,
 )
 from zftp.services.format_preview import SPECIAL_SUFFIXES, ZIP_MAGIC, archive_kind
+from zftp.ui.external_editor import ExternalEditorDialog, find_vscode
 from zftp.ui.file_preview import FilePreviewDialog
 from zftp.ui.format_preview import FormatPreviewMixin
 from zftp.ui.ui_workers import Job, Events
@@ -320,6 +321,14 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             rename_action = menu.addAction('Rename…')
             edit_label = 'View / edit PARAM.SFO…' if entry.name.lower().endswith('.sfo') else 'Edit text…'
             edit_action = menu.addAction(edit_label) if not entry.is_dir else None
+            external_action = None
+            suffix = Path(entry.name).suffix.lower()
+            if (not entry.is_dir and not entry.is_link and not archive_kind(entry.name)
+                    and suffix not in SPECIAL_SUFFIXES and suffix not in ('.db', '.sfo')):
+                external_action = menu.addAction('Edit in VS Code…')
+                if entry.size is not None and entry.size > MAX_EDITOR_BYTES:
+                    external_action.setEnabled(False)
+                    external_action.setToolTip('External text editing supports files up to 1 MiB.')
             permissions_action = menu.addAction('Permissions…')
             delete_action = menu.addAction('Delete folder and contents…' if entry.is_dir else 'Delete permanently…')
             if state.downloads:
@@ -343,6 +352,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             elif picked == download_action: self.download(tab)
             elif picked == rename_action: self.rename_remote(tab)
             elif picked == edit_action: self.edit_remote(tab)
+            elif picked == external_action: self.edit_remote_in_vscode(tab, entry)
             elif picked == permissions_action: self.permissions_remote(tab)
             elif picked == delete_action: self.delete_remote_entry(tab)
     def connect_new(self):
@@ -517,9 +527,21 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             else:
                 self.preview_remote_file(tab, entry)
 
-    def preview_remote_file(self, tab, entry):
+    def edit_remote_in_vscode(self, tab, entry):
+        state = self.sessions.get(tab)
+        if (not state or not state.connected or state.busy or state.closing
+                or entry.is_dir or entry.is_link):
+            return
+        executable = find_vscode()
+        if not executable:
+            QMessageBox.information(self, 'VS Code unavailable',
+                                    'Install Visual Studio Code or make its command available on PATH.')
+            return
+        self.preview_remote_file(tab, entry, external_editor=executable)
+
+    def preview_remote_file(self, tab, entry, *, external_editor=None):
         state = self.sessions[tab]
-        limit = preview_limit(entry.name)
+        limit = MAX_EDITOR_BYTES if external_editor else preview_limit(entry.name)
         if entry.size is not None and entry.size > limit:
             QMessageBox.information(self, 'File too large',
                                     f'The editor limit for this file is {limit // (1024 * 1024)} MiB.')
@@ -544,7 +566,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
                 if state.protocol in ('FTP', 'FTPS'):
                     state.connected = False
                 raise
-            return data, data.startswith(SQLITE_HEADER) and has_sidecars()
+            return data, not external_editor and data.startswith(SQLITE_HEADER) and has_sidecars()
 
         def opened(result):
             data, in_use = result
@@ -589,7 +611,19 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
 
                 return self.run_session_job(tab, f'Saving {name}', publish, complete, failed)
 
-            self.open_file_preview(name, data, save, sqlite_in_use=in_use)
+            if external_editor:
+                if data.startswith((SQLITE_HEADER, b'bplist00', *ZIP_MAGIC)):
+                    QMessageBox.warning(self, 'Could not open text in VS Code', 'This file contains binary data.')
+                    return
+                location = f'{state.host} · {posixpath.join(folder, name)}'
+                try:
+                    dialog = ExternalEditorDialog(self, name, location, data, external_editor, save)
+                except (OSError, ValueError) as error:
+                    QMessageBox.warning(self, 'Could not open text in VS Code', str(error))
+                    return
+                dialog.show()
+            else:
+                self.open_file_preview(name, data, save, sqlite_in_use=in_use)
 
         self.run_session_job(tab, f'Opening {name}', read, opened)
 

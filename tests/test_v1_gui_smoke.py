@@ -286,6 +286,65 @@ class GUIv1SmokeTests(unittest.TestCase):
         self.assertEqual([call.args for call in backend.rename.call_args_list],
                          [('settings.INI', backup), (staged, 'settings.INI')])
 
+    def test_vscode_requires_current_diff_and_guards_remote_upload(self):
+        from zftp.services.remote_management import RemoteConflictError
+
+        window = MainWindow()
+        self.addCleanup(window.close)
+        backend = Mock()
+        original = 'name=café\r\n'.encode('utf-16')
+        backend.read_bytes.return_value = original
+        state = ConnectionSession(backend, 'FTP', 'localhost', 21, 'test', remote_path='/config', connected=True)
+        state.entries = [RemoteEntry('settings.ini', False, len(original))]
+        tab = RemoteTab(state, window)
+        window.sessions[tab] = state
+        self.addCleanup(window.sessions.clear)
+        with (patch.object(window, 'run_session_job') as start,
+              patch('zftp.ui.file_browser.find_vscode', return_value='Code.exe'),
+              patch('zftp.ui.external_editor.subprocess.Popen') as launch):
+            window.edit_remote_in_vscode(tab, state.entries[0])
+            _, _, read, show = start.call_args.args
+            show(read(None))
+            dialog = next(d for d in window.findChildren(QDialog) if d.windowTitle() == 'Edit in VS Code · settings.ini')
+            self.addCleanup(dialog.temporary.cleanup)
+            self.assertEqual(launch.call_args.args[0][-1], str(dialog.path))
+            self.assertEqual(dialog.path.read_bytes(), b'name=caf\xc3\xa9\r\n')
+            self.assertFalse(dialog.upload.isEnabled())
+
+            dialog.path.write_bytes(b'name=first\r\n')
+            dialog.review()
+            self.assertIn('-name=café', dialog.diff.toPlainText())
+            self.assertIn('+name=first', dialog.diff.toPlainText())
+            dialog.path.write_bytes(b'name=second\r\n')
+            dialog.upload.click()
+            start.assert_called_once()
+            self.assertFalse(dialog.upload.isEnabled())
+            backend.rename.assert_not_called()
+
+            dialog.review()
+            state.remote_path = '/other'
+            dialog.upload.click()
+            _, _, publish, saved, failed = start.call_args.args
+            backend.read_bytes.return_value = 'name=changed'.encode('utf-16')
+            with self.assertRaises(RemoteConflictError):
+                publish(None)
+            backend.write_new_bytes.assert_not_called()
+            failed(None)
+
+            backend.read_bytes.return_value = original
+            dialog.upload.click()
+            backup = publish(None)
+            staged, payload = backend.write_new_bytes.call_args.args
+            self.assertEqual(payload, 'name=second\r\n'.encode('utf-16'))
+            self.assertEqual([call.args for call in backend.rename.call_args_list],
+                             [('settings.ini', backup), (staged, 'settings.ini')])
+            self.assertEqual([call.args for call in backend.cwd.call_args_list][-2:],
+                             [('/config',), ('/other',)])
+            path = dialog.path
+            with patch.object(window, 'refresh'):
+                saved(backup)
+            self.assertFalse(path.exists())
+
     def test_folder_eta_and_bar_update_before_any_file_finishes(self):
         window = MainWindow()
         self.addCleanup(window.close)
