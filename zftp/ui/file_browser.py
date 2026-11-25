@@ -45,9 +45,11 @@ from zftp.services.sync_engine import (Inventory, Change, inventory_local, inven
 
 
 from zftp.services.file_preview import (
-    PREVIEW_SUFFIXES, SQLITE_HEADER, preview_limit, read_local_copy, save_local_copy, sqlite_sidecars,
+    MEDIA_LIMIT, OPAQUE_SUFFIXES, SQLITE_HEADER, can_preview, preview_limit, read_local_copy, save_local_copy, sqlite_sidecars,
 )
+from zftp.services.format_preview import SPECIAL_SUFFIXES, ZIP_MAGIC
 from zftp.ui.file_preview import FilePreviewDialog
+from zftp.ui.format_preview import FormatPreviewMixin
 from zftp.ui.ui_workers import Job, Events
 from zftp.ui.remote_tab import RemoteTab
 from zftp.services.param_sfo import ParamSfo
@@ -56,7 +58,7 @@ from zftp.ui.sfo_editor import SfoEditor
 from zftp.ui.ps3_file_tools import Ps3FileToolsMixin
 
 
-class FileBrowserMixin(Ps3FileToolsMixin):
+class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
     def set_local_path(self, path):
         path = Path(path)
         generation = self._local_render_gate.new()
@@ -124,8 +126,12 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         elif path.suffix.lower() == '.txt' and path.is_file():
             if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
                 QMessageBox.warning(self, 'Could not open text file', str(path))
-        elif path.suffix.lower() in PREVIEW_SUFFIXES and path.is_file() and not path.is_symlink():
-            self.preview_local_file(path)
+        elif can_preview(path.name) and path.is_file() and not path.is_symlink():
+            suffix = path.suffix.lower()
+            if suffix in SPECIAL_SUFFIXES or (suffix in OPAQUE_SUFFIXES and path.stat().st_size > MEDIA_LIMIT):
+                self.preview_local_format(path)
+            else:
+                self.preview_local_file(path)
     def preview_local_file(self, path):
         limit = preview_limit(path.name)
 
@@ -176,6 +182,11 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         self.notify('success', 'File saved', f'Original kept as {backup}')
 
     def open_file_preview(self, name, data, save, *, sqlite_in_use=False):
+        if data.startswith(ZIP_MAGIC):
+            self.preview_cached_zip(name, data)
+            return
+        if self.show_format_preview(name, data, len(data)):
+            return
         try:
             dialog = FilePreviewDialog(name, data, save, sqlite_in_use=sqlite_in_use, parent=self)
         except (ValueError, AttributeError, sqlite3.Error) as error:
@@ -462,8 +473,12 @@ class FileBrowserMixin(Ps3FileToolsMixin):
         entry = state.entries[row]
         if entry.is_dir:
             self.navigate(tab, entry.name)
-        elif not entry.is_link and Path(entry.name).suffix.lower() in PREVIEW_SUFFIXES:
-            self.preview_remote_file(tab, entry)
+        elif not entry.is_link and can_preview(entry.name):
+            suffix = Path(entry.name).suffix.lower()
+            if suffix in SPECIAL_SUFFIXES or (suffix in OPAQUE_SUFFIXES and entry.size is not None and entry.size > MEDIA_LIMIT):
+                self.preview_remote_format(tab, entry)
+            else:
+                self.preview_remote_file(tab, entry)
 
     def preview_remote_file(self, tab, entry):
         state = self.sessions[tab]

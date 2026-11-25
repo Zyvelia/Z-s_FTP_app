@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
     from PySide6.QtCore import QCoreApplication, QEvent, QUrl
     from PySide6.QtTest import QSignalSpy, QTest
-    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QPlainTextEdit
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QPlainTextEdit, QScrollArea
     from zftp.ui.main_window import MainWindow
     from zftp.protocols.ftp_engine import RemoteEntry
     from zftp.services.sessions import ConnectionSession
@@ -316,6 +316,15 @@ class GUIv1SmokeTests(unittest.TestCase):
         menu.addMenu.assert_called_once_with('File tools')
         self.assertEqual([call.args[0] for call in menu.addMenu.return_value.addAction.call_args_list],
                          ['Edit config', 'View / edit hex'])
+
+    def test_pbm_preview_opens_an_image_dialog(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        self.assertTrue(window.show_format_preview('bitmap.pbm', b'P1\n2 2\n0 1\n1 0\n', 17))
+        dialog = next(d for d in window.findChildren(QDialog) if d.windowTitle() == 'bitmap.pbm')
+        image = dialog.findChild(QScrollArea).widget().pixmap()
+        self.assertEqual((image.width(), image.height()), (2, 2))
+        self.addCleanup(dialog.close)
 
     def test_activity_combines_session_log_and_alerts(self):
         window = MainWindow()

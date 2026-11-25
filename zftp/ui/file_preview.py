@@ -10,8 +10,9 @@ from PySide6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
-from zftp.services.file_preview import HEX_LIMIT, SQLITE_HEADER, TEXT_SUFFIXES, SQLiteCopy
+from zftp.services.file_preview import HEX_LIMIT, SQLITE_HEADER, SQLiteCopy, is_text_name
 from zftp.services.remote_management import identify_text
+from zftp.ui.format_preview import show_delimited
 
 
 class FilePreviewDialog(QDialog):
@@ -22,6 +23,7 @@ class FilePreviewDialog(QDialog):
         self.resize(780, 530)
         self.data = data
         self.save = save
+        self.writable = save is not None
         self.editing = False
         self.saving = False
         self.sqlite = None
@@ -36,9 +38,11 @@ class FilePreviewDialog(QDialog):
         layout.addWidget(self.hint)
         self.edit = QPushButton('Edit')
         self.edit.clicked.connect(self._enable_editing)
+        self.edit.setVisible(self.writable)
         self.save_button = QPushButton('Save with backup')
         self.save_button.setObjectName('primaryAction')
         self.save_button.setEnabled(False)
+        self.save_button.setVisible(self.writable)
         self.save_button.clicked.connect(self._save)
         close = QPushButton('Close')
         close.clicked.connect(self.close)
@@ -63,7 +67,7 @@ class FilePreviewDialog(QDialog):
             self.viewer = QPlainTextEdit()
             self.viewer.setReadOnly(True)
             try:
-                self.text_copy = identify_text(data, strict_controls=Path(name).suffix.lower() not in TEXT_SUFFIXES)
+                self.text_copy = identify_text(data, strict_controls=not is_text_name(name))
                 content = self.text_copy.content
                 self.hint.setText('Text file')
             except ValueError:
@@ -78,6 +82,10 @@ class FilePreviewDialog(QDialog):
             self.viewer.setPlainText(content)
             self.contents = self.viewer.toPlainText()
             layout.addWidget(self.viewer, 1)
+            if self.text_copy and Path(name).suffix.lower() in ('.csv', '.tsv'):
+                view_table = QPushButton('Preview table')
+                view_table.clicked.connect(lambda: show_delimited(self, name, self.viewer.toPlainText()))
+                buttons.insertWidget(0, view_table)
         layout.addLayout(buttons)
 
     def _enable_editing(self):

@@ -1,6 +1,7 @@
 """Qt-free transfer queue; bounded parallel downloads and ordered writes."""
 from __future__ import annotations
 from dataclasses import dataclass, field
+from itertools import count
 import posixpath
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
@@ -46,23 +47,56 @@ class TransferQueue:
     def __init__(self):
         self.jobs: list[Transfer] = []
 
-    def add(self, transfer: Transfer):
+    @staticmethod
+    def _download_paths(path):
+        path = path.parent.resolve() / path.name
+        return {path, path.with_name(path.name + '.zftp.part')}
+
+    def add(self, transfer: Transfer, *, keep_both=False):
         if transfer.direction not in ('upload', 'download', 'mkdir_local', 'mkdir_remote', 'download_folder'):
             raise ValueError('Invalid transfer direction')
         if not transfer.source or not transfer.destination:
             raise ValueError('Source and destination required')
-        # Reject collisions amongst queued and running operations, including downloads to disk.
-        if any(j.status not in TERMINAL and j.session_id == transfer.session_id
-               and j.direction == transfer.direction and j.remote_dir == transfer.remote_dir
-               and j.destination == transfer.destination for j in self.jobs):
+        if transfer.direction not in DOWNLOADS and any(
+                job.status not in TERMINAL and job.session_id == transfer.session_id
+                and job.direction == transfer.direction and job.remote_dir == transfer.remote_dir
+                and job.destination == transfer.destination for job in self.jobs):
             raise FileExistsError('Destination already reserved by another queued transfer')
-        def download_targets(job):
-            paths = job.children if job.direction == 'download_folder' else (job,)
-            return {Path(part.destination) for part in paths if part.direction == 'download'}
 
-        targets = download_targets(transfer)
-        if any(targets & download_targets(job) for job in self.jobs if job.status not in TERMINAL):
-            raise FileExistsError('Local download destination already reserved')
+        planned = transfer.children if transfer.direction == 'download_folder' else (transfer,)
+        downloads = [part for part in planned if part.direction == 'download']
+        if not downloads:
+            self.jobs.append(transfer)
+            return transfer
+
+        # Folder jobs share a destination directory, so compare their files.
+        reserved = set()
+        for part in self.active_parts():
+            if part.direction == 'download':
+                reserved.update(self._download_paths(Path(part.destination)))
+            elif part.direction == 'mkdir_local':
+                reserved.add(Path(part.destination).resolve())
+        if keep_both:
+            # Directories created by this batch are also unavailable as filenames.
+            reserved.update(Path(part.destination).resolve() for part in planned if part.direction == 'mkdir_local')
+        renames = []
+        for part in downloads:
+            target = Path(part.destination)
+            paths = self._download_paths(target)
+            if keep_both and (reserved & paths or target.exists() or target.is_symlink()):
+                for index in count(2):
+                    renamed = target.with_name(f'{target.stem} ({index}){target.suffix}')
+                    paths = self._download_paths(renamed)
+                    if not reserved & paths and not any(path.exists() or path.is_symlink() for path in paths):
+                        target = renamed
+                        renames.append((part, target))
+                        break
+            elif reserved & paths:
+                raise FileExistsError('Local download destination already reserved')
+            reserved.update(paths)
+
+        for part, target in renames:
+            part.destination = str(target)
         self.jobs.append(transfer)
         return transfer
 
@@ -70,6 +104,8 @@ class TransferQueue:
         running = [j for j in self.jobs if j.session_id == session_id and j.status == 'Running']
         pending = next((j for j in self.jobs if j.session_id == session_id and j.status == 'Queued'), None)
         if pending is None:
+            return None
+        if pending.direction in DOWNLOADS and download_limit == 0:
             return None
         if running and (len(running) >= download_limit or pending.direction not in DOWNLOADS
                         or any(j.direction not in DOWNLOADS for j in running)):

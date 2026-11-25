@@ -1,4 +1,6 @@
 """v0.5 queue behavior: ordering, collision avoidance, isolation, cancellation."""
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from zftp.transfers.transfer_queue import Transfer, TransferQueue
 
@@ -39,6 +41,18 @@ class TransferQueueTests(unittest.TestCase):
         q = TransferQueue(); q.add(download('a'))
         with self.assertRaises(FileExistsError): q.add(download('b'))
         q.add(download('b', 'other.bin'))
+
+    def test_keep_both_reserves_output_and_partial_paths(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            queue = TransferQueue()
+            name = 'game.pkg'
+            queue.add(download('a', name, str(root)), keep_both=True)
+            (root / 'game (2).pkg.zftp.part').write_bytes(b'an unrelated partial file')
+            second = queue.add(download('b', name, str(root)), keep_both=True)
+            self.assertEqual(Path(second.destination).name, 'game (3).pkg')
+            self.assertEqual(queue.next_for('a', download_limit=0), None)
+            self.assertIs(queue.next_for('a', download_limit=4), queue.jobs[0])
 
     def test_cancel_queued_does_not_affect_other_session(self):
         q = TransferQueue(); a = q.add(upload('a')); b = q.add(upload('b'))

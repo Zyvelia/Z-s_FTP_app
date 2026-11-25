@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout,
 )
 
-from zftp.services.ps3_file_tools import CONFIG_LINE, inspect_pkg, missing_plugins, plugin_paths
+from zftp.services.ps3_file_tools import CONFIG_LINE, missing_plugins, plugin_paths
+from zftp.services.format_preview import HEADER_LIMIT, inspect_package
 from zftp.services.remote_management import MAX_EDITOR_BYTES, RemoteConflictError, safe_save_remote_bytes, validate_name
 
 HEX_LIMIT = 64 * 1024
@@ -140,7 +141,7 @@ class Ps3FileToolsMixin:
         def read(_):
             backend = state.backend
             if tool == 'pkg':
-                return inspect_pkg(backend.read_prefix(name, 128), entry.size)
+                return inspect_package(backend.read_prefix(name, HEADER_LIMIT), entry.size)
             return backend.pwd(), backend.read_bytes(name, limit)
 
         def opened(result):

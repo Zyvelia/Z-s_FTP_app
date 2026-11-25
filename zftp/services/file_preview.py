@@ -9,18 +9,36 @@ from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
 from zftp.services.remote_management import MAX_EDITOR_BYTES, RemoteConflictError
+from zftp.services.format_preview import SPECIAL_SUFFIXES
 
 
-TEXT_SUFFIXES = frozenset({'.txt', '.ini', '.log', '.logs'})
-PREVIEW_SUFFIXES = TEXT_SUFFIXES | {'.db', '.dat'}
+TEXT_SUFFIXES = frozenset({
+    '.txt', '.ini', '.log', '.logs', '.json', '.jsonl', '.ndjson', '.yaml', '.yml',
+    '.toml', '.xml', '.csv', '.tsv', '.md', '.rst', '.cfg', '.conf', '.properties',
+    '.env', '.html', '.htm', '.css', '.svg', '.sql', '.sh', '.bash', '.bat', '.cmd',
+    '.ps1', '.py', '.lua', '.js', '.ts', '.c', '.h', '.cpp', '.hpp', '.cs', '.go',
+    '.rs', '.java', '.patch', '.diff', '.service', '.desktop',
+})
+TEXT_NAMES = frozenset({'.env', '.gitignore', '.gitattributes', 'dockerfile', 'makefile', 'readme', 'license'})
+OPAQUE_SUFFIXES = frozenset({'.dat', '.backup', '.idx', '.nvs', '.rec'})
+PREVIEW_SUFFIXES = TEXT_SUFFIXES | SPECIAL_SUFFIXES | OPAQUE_SUFFIXES | {'.db'}
 MEDIA_LIMIT = 8 * 1024 * 1024
 HEX_LIMIT = 64 * 1024
 SQLITE_HEADER = b'SQLite format 3\x00'
 TABLE_LIMIT = 100
 
 
+def is_text_name(name):
+    path = Path(name)
+    return path.suffix.lower() in TEXT_SUFFIXES or path.name.lower() in TEXT_NAMES
+
+
+def can_preview(name):
+    return Path(name).suffix.lower() in PREVIEW_SUFFIXES or is_text_name(name)
+
+
 def preview_limit(name):
-    return MAX_EDITOR_BYTES if Path(name).suffix.lower() in TEXT_SUFFIXES else MEDIA_LIMIT
+    return MAX_EDITOR_BYTES if is_text_name(name) else MEDIA_LIMIT
 
 
 def sqlite_sidecars(name):

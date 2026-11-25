@@ -228,13 +228,13 @@ class TransfersViewMixin:
                              remote_root, str(local_root), children=tuple(tasks),
                              total=len(tasks), skipped=skipped)
             try:
-                self.queue.add(group)
+                self.queue.add(group, keep_both=True)
                 accepted = len(tasks)
             except (OSError, ValueError) as exc:
                 rejected.append(str(exc))
         else:
             for item in tasks:
-                try: self.queue.add(item); accepted += 1
+                try: self.queue.add(item, keep_both=item.direction == 'download'); accepted += 1
                 except (OSError, ValueError) as exc: rejected.append(f'{item.source}: {exc}')
         if folder_batch is not None and not tasks and not rejected:
             QMessageBox.information(self, 'Nothing queued', 'No new files or folders to download under the selected policy.')
@@ -272,10 +272,8 @@ class TransfersViewMixin:
             try:
                 name = clean_remote_name(raw)
                 dest = local_dir / name
-                if dest.exists():
-                    raise FileExistsError('Local destination already exists')
                 self.queue.add(Transfer(str(id(tab)), 'download', name, str(dest),
-                                        remote_dir, str(local_dir)))
+                                        remote_dir, str(local_dir)), keep_both=True)
                 accepted += 1
             except (OSError, ValueError) as exc:
                 rejected.append(f'{raw}: {exc}')
@@ -349,6 +347,8 @@ class TransfersViewMixin:
                 if col == 3:
                     continue  # Progress is a proper widget rather than text-only.
                 cell = QTableWidgetItem(value)
+                if col == 2 and item.direction == 'download':
+                    cell.setToolTip(item.destination)
                 if col == 7:
                     if item.status == 'Completed':
                         cell.setForeground(QColor('#7ce0ac'))
@@ -407,13 +407,24 @@ class TransfersViewMixin:
         self.transfer_metrics = {key: value for key, value in self.transfer_metrics.items()
                                  if any(j.id == key for j in self.queue.jobs)}
         self.render_queue()
+    def set_parallel_downloads(self, limit):
+        self.download_pool.setMaxThreadCount(limit)
+        for tab in tuple(self.sessions):
+            self.pump_queue(tab)
+
     def pump_queue(self, tab):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.busy or state.closing or self._quit_requested: return
         sid = str(id(tab))
         make_connection = getattr(tab, 'make_download_connection', None)
         parallel = state.parallel_downloads and make_connection is not None
-        item = self.queue.next_for(sid, download_limit=2 if parallel else 1)
+        limit = 1
+        if parallel:
+            limit = self.parallel_download_limit.value()
+            active = sum(len(session.downloads) for session in self.sessions.values())
+            if active >= limit:
+                limit = 0
+        item = self.queue.next_for(sid, download_limit=limit)
         if item is None: return
         item.verify_sha256 = self.verify_checksums.isChecked()
         background = parallel and item.direction in DOWNLOADS
@@ -645,7 +656,8 @@ class TransfersViewMixin:
             tab.set_controls()
             self.update_active()
             self.render_queue()
-            QTimer.singleShot(0, lambda: self.pump_queue(tab))
+            for other in tuple(self.sessions):
+                QTimer.singleShot(0, lambda other=other: self.pump_queue(other))
 
         job.events.progress.connect(lambda count, total: self.on_transfer_progress(item, count, total))
         job.events.done.connect(done)

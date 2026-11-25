@@ -32,7 +32,7 @@ See the [v2.1.12 changelog](docs/changelog/CHANGELOG_v2.1.12.md), [release histo
 
 ### Review transfers and run workflows
 
-A connection tab can run two downloads at once while you browse and delete unrelated files. The queue protects active and pending transfer paths. A server that refuses an extra connection falls back to one download at a time.
+Use **Transfer settings → Parallel downloads** to run up to 32 background downloads at once while you browse and delete unrelated files. Additional downloads wait in the queue. Z FTP gives duplicate output filenames numbered copies. The queue protects active and pending transfer paths. A server that refuses an extra connection falls back to one download at a time.
 
 Click **Activity** above the transfer queue for connection events, transfer updates, and alerts. The **History** button opens saved transfer outcomes and CSV export directly. Open **Workflows** in the same window to create or run a saved sequence of file copies.
 
@@ -41,6 +41,12 @@ Transfers skip the extra checksum pass by default. Enable **Full SHA-256 verific
 ### Read or edit logs, configuration files, and database files
 
 Double-click a remote `.txt`, `.log`, `.logs`, `.ini`, `.db`, or `.dat` file to open its viewer. Local files with those extensions open the same way, with local `.txt` files using your default text app. Click **Edit**, then **Save with backup**. The editor recognizes text and SQLite by their contents and shows other binary data as hex. Text files are limited to 1 MiB, database and data files to 8 MiB, and binary edits to 64 KiB. Hex edits keep the same byte count. SQLite shows up to 100 rows per table and supports editing existing values in ordinary tables with row IDs.
+
+### Browse other file formats
+
+Double-click **ZIP** files to list entries and preview small files inside. Z FTP reads the directory of large remote ZIPs using FTP or SFTP ranges when the server supports them. It opens **TTF/OTF** specimens and raster images such as **PBM**, and shows metadata and a bounded hex preview for **PKG** (PS3 and PS4), **ELF**, **RIF**, **IMG/ISO**, SQLite **DB-JOURNAL**, and static **.a** archives. These views are read-only.
+
+Text editing also covers JSON, YAML, TOML, XML, CSV/TSV, Markdown, CFG/CONF, common scripts, and other plain-text formats. CSV and TSV have a table preview. Files such as `.backup`, `.idx`, `.nvs`, and `.rec` open according to their contents, with a hex fallback for unfamiliar binary data.
 
 ### View or edit PS3 PARAM.SFO files
 
@@ -53,7 +59,7 @@ Right-click a remote file and open **File tools**.
 - **Edit config** updates existing key/value entries in UTF-8 `.ini`, `.cfg`, and `.conf` files. The confirmation shows a diff.
 - **Edit boot plugins** reorders or removes lines in `boot_plugins.txt`. The editor checks each configured path before saving.
 - **View / edit hex** displays files up to 64 KiB and previews same-length edits by byte offset.
-- **Inspect PKG header** reads the first 128 bytes and compares the declared size with the directory listing.
+- **Inspect PKG header** shows PS3 or PS4 package metadata and compares the declared size with the directory listing.
 - **Preview image** opens PNG or JPEG files up to 1 MiB. For `ICON0.PNG`, you can select a replacement PNG up to 320×176.
 
 Remote writes check that the original file is still current and keep a backup beside it.

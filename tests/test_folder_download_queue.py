@@ -19,3 +19,16 @@ class FolderDownloadQueueTests(unittest.TestCase):
         queue.finish(folder)
         self.assertEqual(folder.status, 'Completed')
         self.assertEqual(folder.count, 1)
+
+    def test_different_folders_can_share_a_download_destination(self):
+        queue = TransferQueue()
+        jobs = []
+        for folder in ('base-game', 'patch'):
+            child = Transfer('one', 'download', 'content.pkg', f'backup/{folder}/content.pkg',
+                             f'/{folder}', f'backup/{folder}')
+            batch = Transfer('one', 'download_folder', folder, 'backup', '/', 'backup',
+                             children=(child,), total=1)
+            jobs.append(queue.add(batch, keep_both=True))
+        self.assertIs(queue.next_for('one', download_limit=4), jobs[0])
+        self.assertIs(queue.next_for('one', download_limit=4), jobs[1])
+        self.assertNotEqual(jobs[0].children[0].destination, jobs[1].children[0].destination)

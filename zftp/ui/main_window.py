@@ -369,11 +369,17 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.backoff_delay.setRange(0, 60)
         self.backoff_delay.setValue(1)
         self.backoff_delay.setMaximumWidth(82)
+        self.parallel_download_limit = QSpinBox()
+        self.parallel_download_limit.setRange(1, 32)
+        self.parallel_download_limit.setValue(self.download_pool.maxThreadCount())
+        self.parallel_download_limit.setToolTip('Maximum simultaneous background downloads. Extra files wait in the queue.')
+        self.parallel_download_limit.valueChanged.connect(self.set_parallel_downloads)
         for col, (caption, control) in enumerate((
             ('Limit · KiB/s', self.bandwidth_limit),
             ('Chunk', self.chunk_select),
             ('Retries', self.retry_limit),
             ('Delay · s', self.backoff_delay),
+            ('Parallel downloads', self.parallel_download_limit),
         )):
             options.addWidget(QLabel(caption), 0, col)
             options.addWidget(control, 1, col)
