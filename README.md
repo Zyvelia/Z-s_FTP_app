@@ -44,13 +44,15 @@ Double-click a remote `.txt`, `.log`, `.logs`, `.ini`, `.db`, or `.dat` file to 
 
 ### Browse other file formats
 
-Double-click **ZIP** files to list entries and preview small files inside. Z FTP reads the directory of large remote ZIPs using FTP or SFTP ranges when the server supports them. It opens **TTF/OTF** specimens and raster images such as **PBM**, and shows metadata and a bounded hex preview for **PKG** (PS3 and PS4), **ELF**, **RIF**, **IMG/ISO**, SQLite **DB-JOURNAL**, and static **.a** archives. These views are read-only.
+Double-click **ZIP, 7z, RAR, TAR, and TAR.GZ/TGZ** archives to list entries and preview files up to 1 MiB. Large remote archives use FTP or SFTP ranges when supported. Compressed RAR entries use the Windows system tar utility, 7-Zip, or UnRAR. **DDS** and other raster images open in the image viewer. **WAV, OGG, and MP4** open in a media player with a 64 MiB limit for remote playback.
 
-Text editing also covers JSON, YAML, TOML, XML, CSV/TSV, Markdown, CFG/CONF, common scripts, and other plain-text formats. CSV and TSV have a table preview. Files such as `.backup`, `.idx`, `.nvs`, and `.rec` open according to their contents, with a hex fallback for unfamiliar binary data.
+**SELF, SPRX, PRX, ELF, PKG, RIF, IMG/ISO**, static **.a** archives, and SQLite **DB-WAL, DB-SHM, and DB-JOURNAL** have read-only metadata previews. Binary **PLIST** files have a read-only value preview.
 
-### View or edit PS3 PARAM.SFO files
+Text editing also covers NFO, XML PLIST, REG, EditorConfig, Git submodule configuration, SRT, VTT, JSON, YAML, TOML, XML, CSV/TSV, Markdown, CFG/CONF, common scripts, and other plain-text formats. CSV and TSV have a table preview. Files such as `.backup`, `.idx`, `.nvs`, and `.rec` open according to their contents, with a hex fallback for unfamiliar binary data.
 
-In the remote browser, open the game’s folder, right-click `PARAM.SFO`, and choose **View / edit PARAM.SFO**. You can check fields such as `TITLE`, `TITLE_ID`, and `CATEGORY` without saving. The editor supports UTF-8 text and unsigned integers in their existing field space and shows raw fields as read-only. **Save with backup** checks whether the file changed since opening and keeps the original in the same remote folder.
+### View or edit PARAM.SFO files
+
+Double-click `PARAM.SFO` in either file pane. In the remote pane, you can also right-click it and choose **View / edit PARAM.SFO**. You can check fields such as `TITLE`, `TITLE_ID`, and `CATEGORY` without saving. The editor supports UTF-8 text and unsigned integers in their existing field space and shows raw fields as read-only. **Save with backup** checks whether the file changed since opening and keeps the original in the same folder.
 
 ### File tools
 

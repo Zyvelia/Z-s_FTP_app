@@ -3,3 +3,6 @@ paramiko>=3.4,<5
 keyring>=25,<27
 pyftpdlib>=2.0,<3
 pyOpenSSL>=24,<27
+Pillow>=12,<13
+py7zr>=1.1.4,<2
+rarfile>=4.5,<5

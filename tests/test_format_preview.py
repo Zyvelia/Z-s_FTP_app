@@ -1,10 +1,18 @@
+import plistlib
+import sqlite3
+import tarfile
+import tempfile
 import unittest
 from io import BytesIO
+from pathlib import Path
 from struct import pack_into
 from zipfile import ZipFile
 
+from py7zr import SevenZipFile
+
+from zftp.services.archive_preview import archive_listing, archive_member
 from zftp.services.file_preview import can_preview, is_text_name
-from zftp.services.format_preview import ArchiveReader, inspect_format, inspect_package, zip_listing, zip_member
+from zftp.services.format_preview import ArchiveReader, archive_kind, inspect_format, inspect_package, zip_listing, zip_member
 
 
 class FormatPreviewTests(unittest.TestCase):
@@ -12,7 +20,10 @@ class FormatPreviewTests(unittest.TestCase):
         for name in ('sample.dat', 'settings.ini', 'test.ZIP', 'test.zips', 'system.db', 'system.db-journal',
                      'test.pkg', 'sample.ttf', 'sample.otf', 'test.a', 'test.rif', 'test.img', 'test.pbm',
                      'test.backup', 'test.idx', 'test.nvs', 'test.rec', 'test.elf',
-                     'test.json', 'test.yaml', 'test.xml', 'test.csv', 'test.md', 'test.toml', 'Makefile', '.env'):
+                     'test.7z', 'test.rar', 'test.tar', 'test.TAR.GZ', 'test.tgz', 'PARAM.SFO',
+                     'test.self', 'test.sprx', 'test.prx', 'test.dds', 'test.wav', 'test.ogg', 'test.mp4',
+                     'test.db-wal', 'test.db-shm', 'test.nfo', 'test.plist', 'test.reg', 'test.srt', 'test.vtt',
+                     '.editorconfig', '.gitmodules', 'test.json', 'test.yaml', 'test.xml', 'test.csv', 'test.md', 'test.toml', 'Makefile', '.env'):
             with self.subTest(name=name):
                 self.assertTrue(can_preview(name))
         self.assertFalse(can_preview('file.unknown'))
@@ -41,6 +52,60 @@ class FormatPreviewTests(unittest.TestCase):
             self.assertEqual(zip_member(source, entries[1]), b'width=720')
             with self.assertRaisesRegex(ValueError, '1 MiB'):
                 zip_member(source, entries[0])
+
+    def test_tar_gzip_and_7z_read_entries_without_extracting(self):
+        content = b'name=value'
+        for name, mode in (('demo.tar', 'w'), ('demo.TAR.GZ', 'w:gz'), ('demo.7z', 'w')):
+            with self.subTest(name=name):
+                source = BytesIO()
+                kind = archive_kind(name)
+                if kind == '.7z':
+                    with SevenZipFile(source, mode) as archive:
+                        archive.writestr(b'skip', 'skip.txt')
+                        archive.writestr(content, 'nested/settings.ini')
+                else:
+                    with tarfile.open(fileobj=source, mode=mode) as archive:
+                        link = tarfile.TarInfo('link')
+                        link.type = tarfile.SYMTYPE
+                        link.linkname = '/etc/passwd'
+                        archive.addfile(link)
+                        entry = tarfile.TarInfo('nested/settings.ini')
+                        entry.size = len(content)
+                        archive.addfile(entry, BytesIO(content))
+                data = source.getvalue()
+                entries, count = archive_listing(BytesIO(data), kind)
+                self.assertEqual(count, 2)
+                if kind != '.7z':
+                    self.assertFalse(entries[0].is_file)
+                self.assertEqual(archive_member(BytesIO(data), kind, entries[1]), content)
+
+    def test_wal_and_shm_headers_from_sqlite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'data.db'
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute('PRAGMA page_size=4096')
+                connection.execute('PRAGMA journal_mode=WAL')
+                connection.execute('CREATE TABLE items (id INTEGER)')
+                connection.execute('INSERT INTO items VALUES (1)')
+                connection.commit()
+                wal = path.with_suffix('.db-wal').read_bytes()
+                shm = path.with_suffix('.db-shm').read_bytes()
+            finally:
+                connection.close()
+        self.assertIn('Complete frames in file  3', inspect_format('data.db-wal', wal, len(wal)).text)
+        self.assertIn('Last committed frame  3', inspect_format('data.db-shm', shm, len(shm)).text)
+
+    def test_self_and_binary_plist_metadata(self):
+        header = bytearray(32)
+        header[:4] = bytes.fromhex('4f 15 3d 1d')
+        pack_into('<HHI', header, 12, 200, 512, 8192)
+        pack_into('<H', header, 24, 3)
+        report = inspect_format('module.sprx', header, 8192)
+        self.assertIn('PlayStation SELF', report.text)
+        self.assertIn('Segments  3', report.text)
+        data = plistlib.dumps({'Theme': 'Dark'}, fmt=plistlib.FMT_BINARY)
+        self.assertIn("'Theme': 'Dark'", inspect_format('settings.plist', data, len(data)).text)
 
     def test_ps4_header_entries_and_sqlite_journal(self):
         pkg = bytearray(0x480)

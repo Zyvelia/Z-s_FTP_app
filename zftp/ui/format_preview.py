@@ -6,18 +6,22 @@ from io import BytesIO, StringIO
 from pathlib import Path, PurePosixPath
 
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
-from PySide6.QtGui import QFont, QFontDatabase, QImageReader, QPixmap
+from PySide6.QtGui import QFont, QFontDatabase, QImage, QImageReader, QPixmap
+from PIL import Image
 from PySide6.QtWidgets import (
     QDialog, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
+from zftp.services.archive_preview import archive_listing, archive_member
 from zftp.services.file_preview import MEDIA_LIMIT, OPAQUE_SUFFIXES, read_local_copy
 from zftp.services.format_preview import (
-    ARCHIVE_SUFFIXES, ArchiveReader, FONT_SUFFIXES, HEADER_LIMIT, HEADER_SUFFIXES, IMAGE_SUFFIXES,
-    ZipMember, hex_preview, inspect_format, zip_listing, zip_member,
+    ARCHIVE_READ_LIMIT, PLAYBACK_SUFFIXES, ArchiveBudgetExceeded, ArchiveReader, FONT_SUFFIXES, HEADER_LIMIT,
+    HEADER_SUFFIXES, IMAGE_SUFFIXES, archive_kind, hex_preview, inspect_format,
 )
+from zftp.services.param_sfo import ParamSfo
 from zftp.services.remote_management import validate_name
+from zftp.ui.media_preview import REMOTE_PLAYBACK_LIMIT, check_media_header, show_media
 
 
 def preview_dialog(parent, title, content, note=''):
@@ -68,25 +72,36 @@ def show_delimited(parent, name, text):
 
 
 def show_image(parent, name, data):
-    buffer = QBuffer()
-    buffer.setData(QByteArray(data))
-    buffer.open(QIODevice.ReadOnly)
-    reader = QImageReader(buffer)
-    reader.setDecideFormatFromContent(True)
-    size = reader.size()
-    if (not size.isValid() or not 0 < size.width() <= 4096 or not 0 < size.height() <= 4096
-            or bytes(reader.format()).lower() == b'svg'):
-        raise ValueError('Expected a supported raster image up to 4096 × 4096 pixels.')
-    image = reader.read()
-    if image.isNull():
-        raise ValueError(reader.errorString())
+    if Path(name).suffix.lower() == '.dds':
+        try:
+            with Image.open(BytesIO(data), formats=['DDS']) as source:
+                width, height = source.size
+                if not (0 < width <= 4096 and 0 < height <= 4096):
+                    raise ValueError('DDS previews support images up to 4096 × 4096 pixels.')
+                pixels = source.convert('RGBA').tobytes()
+            image = QImage(pixels, width, height, width * 4, QImage.Format_RGBA8888).copy()
+        except (OSError, NotImplementedError, Image.DecompressionBombError) as error:
+            raise ValueError(f'Could not decode this DDS image. {error}') from error
+    else:
+        buffer = QBuffer()
+        buffer.setData(QByteArray(data))
+        buffer.open(QIODevice.ReadOnly)
+        reader = QImageReader(buffer)
+        reader.setDecideFormatFromContent(True)
+        size = reader.size()
+        if (not size.isValid() or not 0 < size.width() <= 4096 or not 0 < size.height() <= 4096
+                or bytes(reader.format()).lower() == b'svg'):
+            raise ValueError('Expected a supported raster image up to 4096 × 4096 pixels.')
+        image = reader.read()
+        if image.isNull():
+            raise ValueError(reader.errorString())
     label = QLabel()
     label.setPixmap(QPixmap.fromImage(image))
     label.setAlignment(Qt.AlignCenter)
     scroll = QScrollArea()
     scroll.setWidget(label)
     scroll.setWidgetResizable(True)
-    preview_dialog(parent, name, scroll, f'{size.width()} × {size.height()} pixels')
+    preview_dialog(parent, name, scroll, f'{image.width()} × {image.height()} pixels')
 
 
 def show_font(parent, name, data):
@@ -111,6 +126,13 @@ class FormatPreviewMixin:
         try:
             if suffix in IMAGE_SUFFIXES:
                 show_image(self, name, data)
+            elif suffix in PLAYBACK_SUFFIXES:
+                show_media(self, name, data=data)
+            elif suffix == '.sfo':
+                document = ParamSfo(data)
+                fields = table_view(['Field', 'Type', 'Value'],
+                                    [(field.name, field.kind, field.value) for field in document.fields])
+                preview_dialog(self, name, fields, 'PARAM.SFO · Read-only')
             elif suffix in FONT_SUFFIXES:
                 show_font(self, name, data)
             else:
@@ -126,58 +148,81 @@ class FormatPreviewMixin:
         return True
 
     def show_archive(self, name, entries, total, open_entry):
-        table = table_view(['Name', 'Bytes', 'Compressed bytes'],
-                           [(entry.name, entry.size, entry.compressed) for entry in entries])
+        table = table_view(
+            ['Name', 'Bytes', 'Compressed bytes'],
+            [(entry.name, entry.size, entry.compressed if entry.compressed is not None else '—')
+             for entry in entries],
+        )
         table.horizontalHeader().resizeSection(0, 490)
-        table.cellDoubleClicked.connect(lambda row, _: open_entry(entries[row])
-                                        if not entries[row].is_directory else None)
-        note = f'{total:,} entries'
-        if len(entries) < total:
-            note += f' · Showing the first {len(entries):,}'
+
+        def activate(row, _column):
+            entry = entries[row]
+            if entry.is_file and not entry.is_directory:
+                open_entry(entry)
+
+        table.cellDoubleClicked.connect(activate)
+        if total is None:
+            note = f'Showing the first {len(entries):,} entries'
+        elif len(entries) < total:
+            note = f'{total:,} entries · Showing the first {len(entries):,}'
+        else:
+            note = f'{total:,} entries'
         note += ' · Double-click a file to preview it.'
         preview_dialog(self, name, table, note)
 
-    def show_zip_entry(self, member, data):
+    def show_archive_entry(self, member, data):
         title = PurePosixPath(member.name).name
-        if Path(title).suffix.lower() in ARCHIVE_SUFFIXES:
-            self.preview_cached_zip(title, data)
+        kind = archive_kind(title)
+        if kind:
+            self.preview_cached_archive(title, data, kind)
         else:
             self.open_file_preview(title, data, None)
 
-    def preview_cached_zip(self, name, data):
+    def preview_cached_archive(self, name, data, kind='.zip'):
         def opened(result):
             entries, total = result
 
             def open_entry(member):
-                self.run_local_file_job(lambda _: zip_member(BytesIO(data), member),
-                                        lambda content: self.show_zip_entry(member, content))
+                self.run_local_file_job(lambda _: archive_member(BytesIO(data), kind, member),
+                                        lambda content: self.show_archive_entry(member, content))
 
             self.show_archive(name, entries, total, open_entry)
 
-        self.run_local_file_job(lambda _: zip_listing(BytesIO(data)), opened)
+        self.run_local_file_job(lambda _: archive_listing(BytesIO(data), kind), opened)
 
     def preview_local_format(self, path):
         suffix = path.suffix.lower()
-        if suffix in ARCHIVE_SUFFIXES:
-            def read_archive(member: ZipMember | None = None):
+        kind = archive_kind(path.name)
+        if kind:
+            def read_archive(member=None):
                 with path.open('rb') as file:
                     def read_at(offset, length):
                         file.seek(offset)
                         return file.read(length)
 
-                    with ArchiveReader(path.stat().st_size, read_at) as source:
-                        return zip_listing(source) if member is None else zip_member(source, member)
+                    with ArchiveReader(file.seek(0, 2), read_at) as source:
+                        if member is None:
+                            return archive_listing(source, kind)
+                        return archive_member(source, kind, member)
 
             def opened(result):
                 entries, total = result
 
                 def open_entry(member):
                     self.run_local_file_job(lambda _: read_archive(member),
-                                            lambda data: self.show_zip_entry(member, data))
+                                            lambda data: self.show_archive_entry(member, data))
 
                 self.show_archive(path.name, entries, total, open_entry)
 
             self.run_local_file_job(lambda _: read_archive(), opened)
+            return
+
+        if suffix in PLAYBACK_SUFFIXES:
+            def check(_):
+                with path.open('rb') as source:
+                    check_media_header(path.name, source.read(16))
+
+            self.run_local_file_job(check, lambda _: show_media(self, path.name, path=path))
             return
 
         def read(_):
@@ -235,32 +280,63 @@ class FormatPreviewMixin:
                     state.connected = False
                 raise
 
-        if suffix in ARCHIVE_SUFFIXES:
+        kind = archive_kind(name)
+        if kind:
             if entry.size is not None and entry.size <= MEDIA_LIMIT:
                 run(f'Opening {name}', lambda: read_whole(MEDIA_LIMIT),
-                    lambda data: self.preview_cached_zip(name, data))
+                    lambda data: self.preview_cached_archive(name, data, kind))
                 return
 
             def read_archive(member=None):
                 size = backend.file_size(name)
                 if size is None:
-                    raise OSError('The FTP server does not report this ZIP size. Download it to browse on your PC.')
+                    size = entry.size
+                if size is None:
+                    raise OSError('The server does not report this archive size. Download it to browse locally.')
+                cache_start, cache = 0, b''
+                fetched = 0
+
+                def read_at(offset, length):
+                    nonlocal cache_start, cache, fetched
+                    if cache_start <= offset and offset + length <= cache_start + len(cache):
+                        relative = offset - cache_start
+                        return cache[relative:relative + length]
+                    remaining = ARCHIVE_READ_LIMIT - fetched
+                    if length > remaining:
+                        raise ArchiveBudgetExceeded('Archive ranges exceed the 16 MiB preview budget.')
+                    count = min(size - offset, remaining, max(128 * 1024, length))
+                    cache = backend.read_prefix(name, count, offset=offset)
+                    cache_start = offset
+                    fetched += len(cache)
+                    return cache[:length]
+
                 try:
-                    with ArchiveReader(size, lambda offset, length: backend.read_prefix(name, length, offset=offset)) as source:
-                        return zip_listing(source) if member is None else zip_member(source, member)
+                    with ArchiveReader(size, read_at) as source:
+                        if member is None:
+                            return archive_listing(source, kind)
+                        return archive_member(source, kind, member)
                 except FTPError as error:
-                    raise OSError(f'Could not read ZIP ranges from the FTP server. Download the ZIP to browse locally. {error}') from error
+                    raise OSError(f'Could not read archive ranges from the server. Download it to browse locally. {error}') from error
 
             def opened(result):
                 entries, total = result
 
                 def open_entry(member):
                     run(f'Opening {PurePosixPath(member.name).name}', lambda: read_archive(member),
-                        lambda data: self.show_zip_entry(member, data))
+                        lambda data: self.show_archive_entry(member, data))
 
                 self.show_archive(name, entries, total, open_entry)
 
             run(f'Opening {name}', read_archive, opened)
+            return
+
+        if suffix in PLAYBACK_SUFFIXES:
+            if entry.size is not None and entry.size > REMOTE_PLAYBACK_LIMIT:
+                QMessageBox.information(self, 'Media too large',
+                                        'Remote playback previews support up to 64 MiB. Download it to play locally.')
+                return
+            run(f'Opening {name}', lambda: read_whole(REMOTE_PLAYBACK_LIMIT),
+                lambda data: self.show_format_preview(name, data, len(data)))
             return
 
         prefix_only = suffix in HEADER_SUFFIXES or suffix in OPAQUE_SUFFIXES

@@ -3,7 +3,9 @@
 from dataclasses import dataclass
 from io import RawIOBase
 from pathlib import Path
+import plistlib
 import re
+from reprlib import Repr
 from struct import unpack_from
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
@@ -13,18 +15,28 @@ from zftp.services.ps3_file_tools import inspect_pkg
 ZIP_MAGIC = (b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08')
 AR_MAGIC = b'!<arch>\n'
 ELF_MAGIC = b'\x7fELF'
+SELF_MAGIC = bytes.fromhex('4f 15 3d 1d')
 JOURNAL_MAGIC = bytes.fromhex('d9 d5 05 f9 20 a1 63 d7')
 FONT_SUFFIXES = frozenset({'.ttf', '.otf'})
 IMAGE_SUFFIXES = frozenset({'.pbm', '.pgm', '.ppm', '.png', '.jpg', '.jpeg',
-                            '.bmp', '.gif', '.webp', '.ico', '.tif', '.tiff'})
-HEADER_SUFFIXES = frozenset({'.pkg', '.elf', '.img', '.iso', '.rif', '.db-journal', '.a'})
-ARCHIVE_SUFFIXES = frozenset({'.zip', '.zips'})
-SPECIAL_SUFFIXES = FONT_SUFFIXES | IMAGE_SUFFIXES | HEADER_SUFFIXES | ARCHIVE_SUFFIXES
+                            '.bmp', '.gif', '.webp', '.ico', '.tif', '.tiff', '.dds'})
+PLAYBACK_SUFFIXES = frozenset({'.wav', '.ogg', '.mp4'})
+HEADER_SUFFIXES = frozenset({'.pkg', '.elf', '.self', '.sprx', '.prx', '.img', '.iso', '.rif',
+                             '.db-journal', '.db-wal', '.db-shm', '.a'})
+ARCHIVE_SUFFIXES = frozenset({'.zip', '.zips', '.7z', '.rar', '.tar', '.tgz'})
+SPECIAL_SUFFIXES = FONT_SUFFIXES | IMAGE_SUFFIXES | HEADER_SUFFIXES | ARCHIVE_SUFFIXES | PLAYBACK_SUFFIXES
 HEADER_LIMIT = 64 * 1024
 PKG_HEADER_SIZE = 0x438
 ARCHIVE_ENTRY_LIMIT = 2000
-ZIP_READ_LIMIT = 16 * 1024 * 1024
-ZIP_MEMBER_LIMIT = 1024 * 1024
+ARCHIVE_READ_LIMIT = 16 * 1024 * 1024
+ARCHIVE_MEMBER_LIMIT = 1024 * 1024
+
+
+def archive_kind(name):
+    suffix = Path(name).suffix.lower()
+    if name.lower().endswith('.tar.gz') or suffix == '.tgz':
+        return '.tgz'
+    return suffix if suffix in ARCHIVE_SUFFIXES else None
 
 
 @dataclass(frozen=True)
@@ -34,13 +46,14 @@ class Report:
 
 
 @dataclass(frozen=True)
-class ZipMember:
+class ArchiveEntry:
     index: int
     name: str
     size: int
-    compressed: int
-    crc: int
+    compressed: int | None
+    crc: int | None
     is_directory: bool
+    is_file: bool = True
 
 
 def clean_label(data):
@@ -111,6 +124,51 @@ def inspect_journal(data):
             ('Sector bytes', str(sector_size)), ('Page bytes', str(page_size))]
 
 
+def inspect_self(data):
+    if len(data) < 32 or not data.startswith(SELF_MAGIC):
+        return [('Header', 'Unrecognized or truncated SELF/ELF header')]
+    version, mode, endian, attributes, category, program_type = data[4:10]
+    header_size, metadata_size, file_size = unpack_from('<HHI', data, 12)
+    segments, = unpack_from('<H', data, 24)
+    return [('Format', 'PlayStation SELF'), ('Version', str(version)), ('Mode', hex(mode)),
+            ('Byte order flag', hex(endian)), ('Attributes', hex(attributes)),
+            ('Category', hex(category)), ('Program type', hex(program_type)),
+            ('Header bytes', str(header_size)), ('Metadata bytes', str(metadata_size)),
+            ('Declared file bytes', str(file_size)), ('Segments', str(segments))]
+
+
+def inspect_wal(data, size):
+    if not data:
+        return [('Header', 'Empty write-ahead log')]
+    if len(data) < 32 or data[:4] not in (b'\x37\x7f\x06\x82', b'\x37\x7f\x06\x83'):
+        return [('Header', 'Unrecognized SQLite write-ahead log header')]
+    magic, version, page_size, sequence, salt_a, salt_b, _, _ = unpack_from('>8I', data)
+    fields = [('Version', str(version)), ('Page bytes', str(page_size)),
+              ('Checkpoint sequence', str(sequence)),
+              ('Checksum byte order', 'Big endian' if magic & 1 else 'Little endian'),
+              ('Salt', f'{salt_a:08X} {salt_b:08X}')]
+    if size is not None and size >= 32 and 512 <= page_size <= 65536 and not page_size & (page_size - 1):
+        fields.append(('Complete frames in file', str((size - 32) // (page_size + 24))))
+    return fields
+
+
+def inspect_shm(data):
+    if not any(data[:96]):
+        return [('Header', 'Empty or zeroed WAL-index')]
+    for offset in (0, 48):
+        header = data[offset:offset + 48]
+        if len(header) < 48:
+            continue
+        for order in ('<', '>'):
+            version, _, changes, ready, _, page_size, frames, pages = unpack_from(order + 'IIIBBHII', header)
+            if version == 3007000 and ready == 1:
+                return [('Version', str(version)), ('Byte order', 'Little endian' if order == '<' else 'Big endian'),
+                        ('Page bytes', str(65536 if page_size == 1 else page_size)),
+                        ('Change counter', str(changes)), ('Last committed frame', str(frames)),
+                        ('Database pages', str(pages))]
+    return [('Header', 'Unrecognized or uninitialized SQLite WAL-index header')]
+
+
 def inspect_disk(data):
     pvd = data[16 * 2048:]
     if pvd.startswith(b'\x01CD001\x01') and len(pvd) >= 128:
@@ -157,6 +215,19 @@ def ar_members(data):
     return members
 
 
+def inspect_binary_plist(data):
+    try:
+        document = plistlib.loads(data, fmt=plistlib.FMT_BINARY)
+    except (plistlib.InvalidFileException, RecursionError, OverflowError) as error:
+        raise ValueError('Invalid binary property list') from error
+    renderer = Repr()
+    renderer.maxlevel = 4
+    renderer.maxlist = renderer.maxtuple = renderer.maxdict = 8
+    renderer.maxstring = renderer.maxother = 256
+    return renderer.repr(document)
+
+
+
 def inspect_format(name, data, size):
     suffix = Path(name).suffix.lower()
     title, fields = 'File header', []
@@ -166,6 +237,12 @@ def inspect_format(name, data, size):
             title, fields = 'Package metadata', inspect_package(data, size)
         elif suffix == '.elf' or data.startswith(ELF_MAGIC):
             title, fields = 'ELF metadata', inspect_elf(data)
+        elif suffix in ('.self', '.sprx', '.prx') or data.startswith(SELF_MAGIC):
+            title, fields = 'SELF metadata', inspect_self(data)
+        elif suffix == '.db-wal':
+            title, fields = 'SQLite write-ahead log', inspect_wal(data, size)
+        elif suffix == '.db-shm':
+            title, fields = 'SQLite WAL-index', inspect_shm(data)
         elif suffix == '.db-journal' or data.startswith(JOURNAL_MAGIC):
             title, fields = 'SQLite journal', inspect_journal(data)
         elif suffix in ('.img', '.iso'):
@@ -177,6 +254,9 @@ def inspect_format(name, data, size):
             fields.extend((member, f'{member_size:,} bytes') for member, member_size in members)
             if size is None or size > len(data):
                 fields.append(('Listing', 'Limited to archive headers present in the preview'))
+        elif suffix == '.plist' and data.startswith(b'bplist00'):
+            title = 'Binary property list · Read-only'
+            return Report(title, inspect_binary_plist(data))
         elif suffix == '.rif':
             title, fields = 'RIF data', [('Format', 'License file bytes')]
             identifier = data[0x20:0x50].split(b'\0', 1)[0]
@@ -197,8 +277,12 @@ def inspect_format(name, data, size):
     return Report(title, text)
 
 
+class ArchiveBudgetExceeded(OSError):
+    pass
+
+
 class ArchiveReader(RawIOBase):
-    """Seekable ZIP input with a byte budget for metadata and entry reads."""
+    """Seekable archive input with a byte budget for metadata and entry reads."""
 
     def __init__(self, size, read_at):
         self.size = size
@@ -221,7 +305,7 @@ class ArchiveReader(RawIOBase):
         start = (0, self.position, self.size)[whence]
         position = start + offset
         if position < 0:
-            raise OSError('ZIP tried to seek before the beginning of the file')
+            raise OSError('Archive tried to seek before the beginning of the file')
         self.position = position
         return position
 
@@ -230,8 +314,8 @@ class ArchiveReader(RawIOBase):
         count = left if length < 0 else min(left, length)
         if not count:
             return b''
-        if self.bytes_read + count > ZIP_READ_LIMIT:
-            raise OSError('ZIP directory or member exceeds the 16 MiB preview budget')
+        if self.bytes_read + count > ARCHIVE_READ_LIMIT:
+            raise ArchiveBudgetExceeded('Archive directory or member exceeds the 16 MiB preview budget')
         data = self.read_at(self.position, count)
         self.position += len(data)
         self.bytes_read += len(data)
@@ -242,7 +326,7 @@ def zip_listing(source):
     with ZipFile(source) as archive:
         entries = archive.infolist()
         return [
-            ZipMember(i, entry.filename, entry.file_size, entry.compress_size, entry.CRC, entry.is_dir())
+            ArchiveEntry(i, entry.filename, entry.file_size, entry.compress_size, entry.CRC, entry.is_dir())
             for i, entry in enumerate(entries[:ARCHIVE_ENTRY_LIMIT])
         ], len(entries)
 
@@ -259,10 +343,10 @@ def zip_member(source, member):
             raise ValueError('This ZIP entry is a folder or is password protected.')
         if item.compress_type not in (ZIP_STORED, ZIP_DEFLATED):
             raise ValueError('This compression method is unavailable for entry previews.')
-        if item.file_size > ZIP_MEMBER_LIMIT or item.compress_size > ZIP_MEMBER_LIMIT:
+        if item.file_size > ARCHIVE_MEMBER_LIMIT or item.compress_size > ARCHIVE_MEMBER_LIMIT:
             raise ValueError('ZIP entry previews are limited to 1 MiB.')
         with archive.open(item) as stream:
-            data = stream.read(ZIP_MEMBER_LIMIT + 1)
-        if len(data) > ZIP_MEMBER_LIMIT:
+            data = stream.read(ARCHIVE_MEMBER_LIMIT + 1)
+        if len(data) > ARCHIVE_MEMBER_LIMIT:
             raise ValueError('ZIP entry exceeds the preview limit.')
         return data

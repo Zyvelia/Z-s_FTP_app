@@ -47,7 +47,7 @@ from zftp.services.sync_engine import (Inventory, Change, inventory_local, inven
 from zftp.services.file_preview import (
     MEDIA_LIMIT, OPAQUE_SUFFIXES, SQLITE_HEADER, can_preview, preview_limit, read_local_copy, save_local_copy, sqlite_sidecars,
 )
-from zftp.services.format_preview import SPECIAL_SUFFIXES, ZIP_MAGIC
+from zftp.services.format_preview import SPECIAL_SUFFIXES, ZIP_MAGIC, archive_kind
 from zftp.ui.file_preview import FilePreviewDialog
 from zftp.ui.format_preview import FormatPreviewMixin
 from zftp.ui.ui_workers import Job, Events
@@ -128,10 +128,36 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
                 QMessageBox.warning(self, 'Could not open text file', str(path))
         elif can_preview(path.name) and path.is_file() and not path.is_symlink():
             suffix = path.suffix.lower()
-            if suffix in SPECIAL_SUFFIXES or (suffix in OPAQUE_SUFFIXES and path.stat().st_size > MEDIA_LIMIT):
+            if suffix == '.sfo':
+                self.edit_local_sfo(path)
+            elif (archive_kind(path.name) or suffix in SPECIAL_SUFFIXES
+                  or (suffix in OPAQUE_SUFFIXES and path.stat().st_size > MEDIA_LIMIT)):
                 self.preview_local_format(path)
             else:
                 self.preview_local_file(path)
+
+    def revised_sfo(self, document, path):
+        dialog = SfoEditor(document, str(path), self)
+        accepted = dialog.exec() == QDialog.Accepted
+        changes = dialog.changes
+        dialog.deleteLater()
+        return document.edited(changes) if accepted else document.raw
+
+    def edit_local_sfo(self, path):
+        def opened(document):
+            revised = self.revised_sfo(document, path)
+            if revised == document.raw:
+                return
+            if self.queue.protects_local_path(path):
+                QMessageBox.information(self, 'File in transfer queue', 'Finish or cancel the transfer before saving.')
+                return
+            self.run_local_file_job(
+                lambda _: save_local_copy(path, document.raw, revised, limit=MAX_EDITOR_BYTES),
+                lambda backup: self.notify('success', 'PARAM.SFO saved', f'Original kept as {backup}'),
+            )
+
+        self.run_local_file_job(lambda _: ParamSfo(read_local_copy(path, MAX_EDITOR_BYTES)), opened)
+
     def preview_local_file(self, path):
         limit = preview_limit(path.name)
 
@@ -183,7 +209,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
 
     def open_file_preview(self, name, data, save, *, sqlite_in_use=False):
         if data.startswith(ZIP_MAGIC):
-            self.preview_cached_zip(name, data)
+            self.preview_cached_archive(name, data)
             return
         if self.show_format_preview(name, data, len(data)):
             return
@@ -475,7 +501,18 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             self.navigate(tab, entry.name)
         elif not entry.is_link and can_preview(entry.name):
             suffix = Path(entry.name).suffix.lower()
-            if suffix in SPECIAL_SUFFIXES or (suffix in OPAQUE_SUFFIXES and entry.size is not None and entry.size > MEDIA_LIMIT):
+            if suffix == '.sfo':
+                try:
+                    name = validate_name(entry.name)
+                except ValueError as error:
+                    QMessageBox.warning(self, 'Invalid filename', str(error))
+                    return
+                if entry.size is not None and entry.size > MAX_EDITOR_BYTES:
+                    QMessageBox.information(self, 'File too large', 'PARAM.SFO previews support up to 1 MiB.')
+                    return
+                self.edit_remote_sfo(tab, state, name)
+            elif (archive_kind(entry.name) or suffix in SPECIAL_SUFFIXES
+                  or (suffix in OPAQUE_SUFFIXES and entry.size is not None and entry.size > MEDIA_LIMIT)):
                 self.preview_remote_format(tab, entry)
             else:
                 self.preview_remote_file(tab, entry)
@@ -735,7 +772,12 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
     def edit_remote_sfo(self, tab, state, name):
         def read(_):
             folder = state.backend.pwd()
-            raw = state.backend.read_bytes(name, MAX_EDITOR_BYTES)
+            try:
+                raw = state.backend.read_bytes(name, MAX_EDITOR_BYTES)
+            except ValueError:
+                if state.protocol in ('FTP', 'FTPS'):
+                    state.connected = False
+                raise
             return folder, ParamSfo(raw)
 
         def opened(result):
@@ -743,20 +785,18 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
                 return
             folder, document = result
             path = posixpath.join(folder, name)
-            dialog = SfoEditor(document, path, self)
-            accepted = dialog.exec() == QDialog.Accepted
-            changes = dialog.changes
-            dialog.deleteLater()
-            if not accepted:
-                return
-            revised = document.edited(changes)
-            if revised == document.raw:
+            revised = self.revised_sfo(document, path)
+            if revised == document.raw or self.sessions.get(tab) is not state or not state.connected:
                 return
             if QMessageBox.question(self, 'Confirm PARAM.SFO edit',
                     f'Save changes to {state.host}{path}?\n\n'
                     'The original will be kept as a backup in the same remote folder. '
-                    'Altered metadata can affect how the PS3 recognizes this item.',
+                    'Altered metadata can affect how the console recognizes this item.',
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+            session_ids = {str(id(other)) for other in self.sessions if self.endpoint_for(other) == self.endpoint_for(tab)}
+            if self.queue.protects_remote_path(session_ids, folder, name):
+                QMessageBox.information(self, 'File in transfer queue', 'Finish or cancel the transfer before saving.')
                 return
 
             def save(_):
@@ -767,6 +807,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
 
             def saved(backup):
                 if backup:
+                    tab.directory_cache.invalidate(folder)
                     self.log(f'{state.host}: updated {path}; recovery backup {backup}')
                     QMessageBox.information(self, 'PARAM.SFO saved', f'Original preserved as:\n{posixpath.join(folder, backup)}')
                     self.refresh(tab)

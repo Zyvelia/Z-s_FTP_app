@@ -1,4 +1,4 @@
-"""Read and edit structured PS3 metadata."""
+"""Read and edit structured PlayStation metadata."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QHeaderView, QInputDialog,

@@ -1,4 +1,4 @@
-"""PS3 PARAM.SFO metadata with in-place edits inside existing field slots."""
+"""PlayStation PARAM.SFO metadata with in-place edits inside existing field slots."""
 from dataclasses import dataclass
 from struct import Struct
 
@@ -53,7 +53,7 @@ class ParamSfo:
             raise ValueError('PARAM.SFO must be between 20 bytes and 1 MiB.')
         magic, version, keys, data, count = HEADER.unpack_from(self.raw)
         if magic != b'\0PSF' or version != 0x101:
-            raise ValueError('Expected a PS3 PARAM.SFO file with PSF version 1.1.')
+            raise ValueError('Expected a PlayStation PARAM.SFO file with PSF version 1.1.')
         if count > 4096 or not HEADER.size + count * INDEX.size <= keys <= data <= len(self.raw):
             raise ValueError('PARAM.SFO contains invalid table offsets.')
 
