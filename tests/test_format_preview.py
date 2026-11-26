@@ -16,6 +16,29 @@ from zftp.services.format_preview import ArchiveReader, archive_kind, inspect_fo
 
 
 class FormatPreviewTests(unittest.TestCase):
+    def test_zip_and_7z_password_prompts_preserve_entry_preview(self):
+        from pyzipper import AESZipFile, WZ_AES
+        from zftp.services.format_preview import ArchivePasswordRequired
+
+        for kind in ('.zip', '.7z'):
+            with self.subTest(kind=kind):
+                buffer = BytesIO()
+                if kind == '.zip':
+                    with AESZipFile(buffer, 'w', encryption=WZ_AES) as archive:
+                        archive.setpassword(b'fixture')
+                        archive.writestr('inside.txt', b'contents')
+                else:
+                    with SevenZipFile(buffer, 'w', password='fixture', header_encryption=True) as archive:
+                        archive.writestr(b'contents', 'inside.txt')
+                payload = buffer.getvalue()
+                if kind == '.7z':
+                    with self.assertRaises(ArchivePasswordRequired):
+                        archive_listing(BytesIO(payload), kind)
+                entries, _ = archive_listing(BytesIO(payload), kind, 'fixture')
+                with self.assertRaises(ArchivePasswordRequired):
+                    archive_member(BytesIO(payload), kind, entries[0], 'wrong')
+                self.assertEqual(archive_member(BytesIO(payload), kind, entries[0], 'fixture'), b'contents')
+
     def test_supported_files_and_case_independent_text_names(self):
         for name in ('sample.dat', 'settings.ini', 'test.ZIP', 'test.zips', 'system.db', 'system.db-journal',
                      'test.pkg', 'sample.ttf', 'sample.otf', 'test.a', 'test.rif', 'test.img', 'test.pbm',

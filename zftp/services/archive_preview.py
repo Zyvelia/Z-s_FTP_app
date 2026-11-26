@@ -118,7 +118,10 @@ def open_7z(source, password):
 def open_rar(source, password):
     with rarfile.RarFile(source, errors='strict') as archive:
         if password:
-            archive.setpassword(password)
+            try:
+                archive.setpassword(password)
+            except (rarfile.RarWrongPassword, rarfile.BadRarFile) as error:
+                raise ArchivePasswordRequired('The RAR password did not work.') from error
         yield archive
 
 
