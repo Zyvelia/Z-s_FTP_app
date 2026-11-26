@@ -61,11 +61,16 @@ from zftp.ui.ps3_file_tools import Ps3FileToolsMixin
 
 
 class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
-    def set_local_path(self, path):
+    def set_local_path(self, path, *, create=False):
         path = Path(path)
         generation = self._local_render_gate.new()
         self.update_local_caption('Loading local: ' + str(path))
-        job = Job(lambda _: scan_directory(path))
+        def scan(_):
+            if create:
+                path.mkdir(parents=True, exist_ok=True)
+            return scan_directory(path)
+
+        job = Job(scan)
         self.jobs.append(job)
         def finish():
             if job in self.jobs:

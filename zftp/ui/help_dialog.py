@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 
 TOPICS = (
     ('Downloads & folders', (
-        ('Choose where files go', 'Select files or folders in the right Remote pane. Click Download, or right-click and choose Download folder. Pick the destination in the dialog. Z FTP creates the selected folder inside that destination.'),
+        ('Choose where files go', 'Click Download or use the remote right-click menu to save into the folder shown in the Local pane. The pane starts in Downloads. Navigate to another local folder or use Browse to change the destination before downloading.'),
         ('Dragging to the Local pane', 'Drops download into the folder shown on the left. Use Browse above the Local pane to change that folder before dragging.'),
         ('Folder progress', 'Review the folder preview, then queue it. The folder appears as one transfer and sends one completion notification after its queued items finish. Existing files can be skipped or kept as separate copies. Compare the preview before relying on the backup.'),
     )),

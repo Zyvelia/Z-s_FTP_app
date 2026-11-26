@@ -7,7 +7,7 @@ import time
 import posixpath
 from datetime import datetime
 from pathlib import Path
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize, QSettings, QLockFile
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize, QSettings, QLockFile, QStandardPaths
 from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor
 from zftp.services.directory_performance import scan_directory, batches, RenderGate, UpdateThrottle
 from PySide6.QtWidgets import (
@@ -85,7 +85,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self._quit_timer.timeout.connect(self._advance_shutdown)
         self.store = ProfileStore()
         self.loaded_profile = None
-        self.local_path = Path.home()
+        downloads = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+        self.local_path = Path(downloads) if downloads else Path.home() / 'Downloads'
         self.sessions: dict[RemoteTab, ConnectionSession] = {}
         self.preferences = (QSettings(str(portable / 'settings.ini'), QSettings.IniFormat) if portable
                             else QSettings('Zyvelia', 'ZFTP'))
@@ -299,6 +300,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.local_tools.setMenu(self.local_menu)
         local_actions.addWidget(self.local_tools)
         self.local_table = self.make_table("local")
+        self.local_table.local_directory = self.local_path
         self.local_table.setAlternatingRowColors(True)
         self.local_table.verticalHeader().setDefaultSectionSize(29)
         self.local_table.setMinimumHeight(220)
@@ -307,7 +309,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         ll.setSpacing(5)
         ll.addWidget(self.local_label)
         ll.addLayout(local_actions)
-        destination_hint = QLabel('Use Download to choose a destination, or drop here to download into this folder.')
+        destination_hint = QLabel('Downloads go to this folder. Use Browse to change it.')
         destination_hint.setObjectName('subTitle')
         destination_hint.setWordWrap(True)
         ll.addWidget(destination_hint)
@@ -615,7 +617,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self._local_render_gate = RenderGate()
         self._queue_redraw_throttle = UpdateThrottle()
         self._key_shortcuts = []
-        self.set_local_path(self.local_path)
+        self.set_local_path(self.local_path, create=True)
         for keys, handler in (('F1', self.show_help),
                               ('F5', lambda: self.set_local_path(self.local_path)),
                               ('Ctrl+L', self.focus_local_path),

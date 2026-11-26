@@ -98,6 +98,6 @@ Right-click a remote file and open **File tools**.
 
 Remote writes check that the original file is still current and keep a backup beside it.
 
-To choose where a remote download goes, use **Download** or right-click and choose **Download folder**, then select the destination in the picker. Dragging onto the local pane uses the folder shown in that pane. Folder downloads appear as one queue job with a single completion notification.
+The Local pane opens in your system **Downloads** folder. **Download**, the remote right-click menu, and drag-and-drop all save into the folder currently shown in the Local pane. To change the destination, use **Browse** or navigate in the Local pane before queuing the download. Folder downloads show a preview and appear as one queue job with a single completion notification.
 
 Open **Help** in Z FTP or press **F1** for a searchable guide to downloads, connections, transfer settings, file tools, and other features.

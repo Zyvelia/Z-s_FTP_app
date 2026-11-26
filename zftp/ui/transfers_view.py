@@ -12,7 +12,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, 
 from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor
 from zftp.services.directory_performance import scan_directory, batches, RenderGate, UpdateThrottle
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
+    QApplication, QComboBox, QDialog, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget, QSizePolicy, QListWidget, QListWidgetItem, QSpinBox, QCheckBox, QPlainTextEdit,
@@ -69,9 +69,7 @@ class TransfersViewMixin:
         entries = self.selected_remote_files(tab)
         if not entries:
             QMessageBox.information(self, 'Select files', 'Select one or more remote files or folders.'); return
-        folder = QFileDialog.getExistingDirectory(self, 'Choose download destination', str(self.local_path))
-        if folder:
-            self.enqueue_remote_items(tab, [e.name for e in entries], Path(folder))
+        self.enqueue_remote_items(tab, [entry.name for entry in entries])
     def enqueue_remote_items(self, tab, names, destination=None):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.closing: return

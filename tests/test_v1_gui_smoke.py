@@ -171,6 +171,52 @@ class GUIv1SmokeTests(unittest.TestCase):
                         self.assertIn('0 active', window.stage_ribbon.text())
                         self.assertEqual(item.verify_sha256, enabled)
 
+    def test_download_uses_system_downloads_then_the_current_local_pane(self):
+        from PySide6.QtCore import QStandardPaths
+        from PySide6.QtWidgets import QFileDialog
+
+        with tempfile.TemporaryDirectory() as directory:
+            downloads = Path(directory) / 'Downloads'
+            chosen = Path(directory) / 'Another folder'
+            chosen.mkdir()
+            with patch.object(QStandardPaths, 'writableLocation', return_value=str(downloads)):
+                window = MainWindow()
+            try:
+                window.queue.paused = True
+                state = ConnectionSession(Mock(), 'FTP', 'localhost', 21, 'test', connected=True)
+                files = [RemoteEntry('first.bin', False), RemoteEntry('second.bin', False),
+                         RemoteEntry('folder', True)]
+                state.entries = files
+                tab = RemoteTab(state, window)
+                window.sessions[tab] = state
+
+                def wait_for_local_folder():
+                    for _ in range(250):
+                        if not window.jobs:
+                            return
+                        QTest.qWait(10)
+                    self.fail('Local directory did not finish loading')
+
+                wait_for_local_folder()
+                self.assertTrue(downloads.is_dir())
+                self.assertEqual(window.local_path, downloads)
+                with (patch.object(QFileDialog, 'getExistingDirectory') as picker,
+                      patch.object(window, 'checkpoint_queue'),
+                      patch.object(window, 'selected_remote_files', side_effect=[[files[0]], [files[1]], [files[2]]]),
+                      patch.object(window, 'start_pending_folder_scan')):
+                    window.download(tab)
+                    window.set_local_path(chosen)
+                    wait_for_local_folder()
+                    window.download(tab)
+                    window.download(tab)
+                    picker.assert_not_called()
+                self.assertEqual([Path(job.destination) for job in window.queue.jobs],
+                                 [downloads / 'first.bin', chosen / 'second.bin'])
+                self.assertEqual(state.pending_folder_scans, [(('folder',), '/', chosen)])
+            finally:
+                window.sessions.clear()
+                window.close()
+
     def test_two_downloads_allow_an_unrelated_delete_and_cancel_independently(self):
         window = MainWindow()
         self.addCleanup(window.close)
