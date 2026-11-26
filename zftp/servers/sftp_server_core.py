@@ -18,6 +18,8 @@ from typing import Callable
 
 from zftp.servers.server_core import ServerAccount, sanitize_log, validate_setup, ServerConfig
 
+from zftp.servers.clients import ServerClients
+
 
 @dataclass(frozen=True)
 class SFTPServerConfig:
@@ -114,6 +116,7 @@ class SFTPServerController:
         self._clients: dict[object, tuple[str, Thread]] = {}
         self._error: Exception | None = None
         self._running = False
+        self.clients = ServerClients()
 
     @property
     def running(self):
@@ -189,12 +192,15 @@ class SFTPServerController:
     def _client(self, client, ip, accounts, host_key):
         import paramiko
         transport = None
+        self.clients.connect(client, ip)
         try:
             transport = paramiko.Transport(client)
             transport.add_server_key(host_key)
-            auth = _Authentication(accounts, lambda m: self._log(m))
+            auth = _Authentication(accounts, self._log, lambda username: self.clients.login(client, username))
+            def report_transfer(handle, text=None):
+                self.clients.transfer(client, handle, text)
             transport.set_subsystem_handler('sftp', paramiko.SFTPServer, _ShareSFTP,
-                                            accounts=auth, emit=self._log)
+                                            accounts=auth, emit=self._log, report_transfer=report_transfer)
             transport.start_server(server=auth, event=None)
             while not self._stop.is_set() and transport.is_active():
                 self._stop.wait(0.2)
@@ -207,6 +213,7 @@ class SFTPServerController:
             except OSError: pass
             with self._lock:
                 self._clients.pop(client, None)
+            self.clients.disconnect(client)
             self._log('Disconnected: ' + ip)
 
     def stop(self, timeout=6):
@@ -240,10 +247,11 @@ except ImportError:
 
 if paramiko is not None:
     class _Authentication(paramiko.ServerInterface):
-        def __init__(self, accounts, log):
+        def __init__(self, accounts, log, report_login=lambda _: None):
             self.accounts = {account.username: account for account in accounts}
             self.account = None
             self.log = log
+            self.report_login = report_login
             self.failures = 0
 
         def get_allowed_auths(self, username):
@@ -257,6 +265,7 @@ if paramiko is not None:
             good = hmac.compare_digest(candidate.encode(), password.encode())
             if good and account and self.failures <= 3:
                 self.account = account
+                self.report_login(username)
                 self.log('Login: ' + username)
                 return paramiko.AUTH_SUCCESSFUL
             self.log('Rejected login: ' + sanitize_log(username))
@@ -271,14 +280,28 @@ if paramiko is not None:
             return super().check_channel_subsystem_request(channel, name) if name == 'sftp' else False
 
 
+    class _TrackedHandle(paramiko.SFTPHandle):
+        def __init__(self, flags, report_transfer, description):
+            super().__init__(flags)
+            self.report_transfer = report_transfer
+            report_transfer(id(self), description)
+
+        def close(self):
+            try:
+                return super().close()
+            finally:
+                self.report_transfer(id(self))
+
+
     class _ShareSFTP(paramiko.SFTPServerInterface):
-        def __init__(self, server, *args, accounts, emit, **kwargs):
+        def __init__(self, server, *args, accounts, emit, report_transfer=lambda *_: None, **kwargs):
             super().__init__(server, *args, **kwargs)
             if not server.account:
                 raise PermissionError('Authentication required')
             self.account = server.account
             self.home = Path(self.account.home)
             self.emit = emit
+            self.report_transfer = report_transfer
 
         def _path(self, path, missing=False):
             return resolve_share(self.home, path, allow_missing=missing)
@@ -338,7 +361,8 @@ if paramiko is not None:
                         else 'r+b' if flags & os.O_RDWR
                         else 'wb' if flags & os.O_WRONLY else 'rb')
                 stream = os.fdopen(fd, mode)
-                handle = paramiko.SFTPHandle(flags)
+                direction = 'Upload' if write else 'Download'
+                handle = _TrackedHandle(flags, self.report_transfer, f'{direction} · {sanitize_log(path)}')
                 if write:
                     handle.writefile = stream
                 handle.readfile = stream

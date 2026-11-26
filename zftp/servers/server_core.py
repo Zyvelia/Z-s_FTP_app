@@ -13,6 +13,8 @@ import ipaddress
 import logging
 import time
 
+from zftp.servers.clients import ServerClients
+
 
 @dataclass(frozen=True)
 class ServerAccount:
@@ -93,6 +95,7 @@ class ServerController:
         self._lock = Lock()
         self._error: Exception | None = None
         self._running = False
+        self.clients = ServerClients()
 
     @property
     def running(self):
@@ -137,12 +140,42 @@ class ServerController:
                 authorizer.add_user(account.username, account.password, str(Path(account.home).resolve()),
                                     perm='elradfmwMT' if account.writable else 'elr')
 
+            clients = self.clients
+
             class Handler(TLS_FTPHandler if config.tls else FTPHandler):
+                pending_transfer = None
+
+                def process_command(self, command, *args, **kwargs):
+                    if command in ('RETR', 'STOR', 'APPE', 'STOU') and args:
+                        filename = Path(args[0]).name
+                        direction = 'Download' if command == 'RETR' else 'Upload'
+                        self.pending_transfer = f'{direction} · {sanitize_log(filename)}'
+                        try:
+                            return super().process_command(command, *args, **kwargs)
+                        finally:
+                            self.pending_transfer = None
+                    return super().process_command(command, *args, **kwargs)
+
+                def respond(self, response, *args, **kwargs):
+                    if response.startswith(('125 ', '150 ')) and self.pending_transfer:
+                        clients.transfer(id(self), 'file', self.pending_transfer)
+                    return super().respond(response, *args, **kwargs)
+
+                def log_transfer(self, *args, **kwargs):
+                    clients.transfer(id(self), 'file')
+                    return super().log_transfer(*args, **kwargs)
+
+                def on_logout(self, username):
+                    clients.login(id(self), '')
+
                 def on_connect(self):
+                    clients.connect(id(self), self.remote_ip)
                     send('Connected: ' + sanitize_log(self.remote_ip))
                 def on_disconnect(self):
+                    clients.disconnect(id(self))
                     send('Disconnected: ' + sanitize_log(self.remote_ip))
                 def on_login(self, username):
+                    clients.login(id(self), username)
                     send('Login: ' + sanitize_log(username))
                 def on_login_failed(self, username, password):
                     send('Login failed: ' + sanitize_log(username))

@@ -1,5 +1,6 @@
-from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit, QComboBox, QCheckBox, QPushButton, QHBoxLayout, QFileDialog, QDialogButtonBox
+from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit, QComboBox, QCheckBox, QPushButton, QHBoxLayout, QFileDialog, QDialogButtonBox, QSpinBox
 from zftp.services.profiles import Profile
+from zftp.services.storage import portable_data
 
 class ProfileDialog(QDialog):
     def __init__(self, parent, profile=None):
@@ -15,14 +16,24 @@ class ProfileDialog(QDialog):
         self.port = QLineEdit(str(profile.port) if profile else '22')
         self.username = QLineEdit(profile.username if profile else '')
         self.key_path = QLineEdit(profile.key_path if profile else '')
+        self.bandwidth = QSpinBox()
+        self.bandwidth.setRange(0, 1048576)
+        self.bandwidth.setSpecialValueText('Use global limit')
+        self.bandwidth.setSuffix(' KiB/s')
+        self.bandwidth.setValue(profile.bandwidth_kib if profile else 0)
+        self.remote_path = QLineEdit(profile.remote_path if profile else '')
+        self.local_path = QLineEdit(profile.local_path if profile else '')
         self.key_button = QPushButton('Browse key…')
         self.favorite = QCheckBox('Show at top of saved connections')
         self.favorite.setChecked(profile.favorite if profile else False)
         self.save_password = QCheckBox('Save password in operating system credential store')
-        self.save_password.setChecked(profile.save_password if profile else False)
+        self.save_password.setChecked(bool(profile and profile.save_password and portable_data() is None))
+        if portable_data() is not None:
+            self.save_password.setEnabled(False)
+            self.save_password.setToolTip('Portable profiles request the password at connection time.')
         self.password = QLineEdit(); self.password.setEchoMode(QLineEdit.Password)
         if getattr(parent, 'streamer_enabled', False):
-            for field in (self.name, self.host, self.port, self.username, self.key_path):
+            for field in (self.name, self.host, self.port, self.username, self.key_path, self.remote_path, self.local_path):
                 field.setEchoMode(QLineEdit.Password)
         self.password.setPlaceholderText('Leave blank to keep stored password' if profile and profile.save_password else 'Optional password')
         form.addRow('Profile name', self.name)
@@ -30,6 +41,9 @@ class ProfileDialog(QDialog):
         form.addRow('Server', self.host)
         form.addRow('Port', self.port)
         form.addRow('Username', self.username)
+        form.addRow('Transfer limit', self.bandwidth)
+        form.addRow('Remote starting folder', self.remote_path)
+        form.addRow('Local starting folder', self.local_path)
         key_row = QHBoxLayout(); key_row.addWidget(self.key_path); key_row.addWidget(self.key_button)
         form.addRow('SSH private key', key_row)
         form.addRow('', self.favorite)
@@ -58,7 +72,8 @@ class ProfileDialog(QDialog):
         result = Profile.create(self.name.text(), self.host.text(), port, self.protocol.currentText(),
                                 self.username.text(), self.favorite.isChecked(),
                                 self.key_path.text() if self.protocol.currentText() == 'SFTP' else '',
-                                self.save_password.isChecked())
+                                self.save_password.isChecked(), bandwidth_kib=self.bandwidth.value(),
+                                remote_path=self.remote_path.text(), local_path=self.local_path.text())
         if self.profile: result.id = self.profile.id
         return result
 

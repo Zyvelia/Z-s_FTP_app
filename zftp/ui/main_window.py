@@ -25,12 +25,13 @@ from zftp.ui.profile_dialog import ProfileDialog
 from zftp.services.sessions import ConnectionSession
 from zftp.transfers.transfer_queue import TransferQueue, Transfer
 from zftp.ui.transfer_tables import TransferTable
-from zftp.transfers.reliable_transfer import TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
+from zftp.transfers.reliable_transfer import SharedRateLimiter, TransferSettings, download as resilient_download, upload as resilient_upload, with_retries
 from zftp.transfers.eta_estimator import ETAEstimator, format_eta
 from zftp.services.remote_management import (validate_name, read_editor_snapshot, safe_save_editor, find_remote, RemoteConflictError)
 from zftp.ui.server_ui import ServerPanel
 from zftp.ui.sftp_server_ui import SFTPServerPanel
 from zftp.ui.nfs_server_ui import NFSServerPanel
+from zftp.ui.phone_drop import PhoneDropPanel
 from zftp.transfers.integrity import verify_transfer
 from zftp.services.transfer_history import TransferHistory
 from zftp.services.workflows import WorkflowStore
@@ -49,7 +50,9 @@ from zftp.ui.transfers_view import TransfersViewMixin
 from zftp.ui.workflow_views import WorkflowViewsMixin
 from zftp.ui.shutdown_controls import ShutdownControlsMixin
 from zftp.ui.profile_controls import ProfileControlsMixin
+from zftp.ui.units import format_rate, format_size
 from zftp.services.queue_recovery import QueueRecovery
+from zftp.services.storage import portable_data
 
 
 class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
@@ -60,8 +63,9 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[2] / 'assets' / 'zftp_icon.png')))
         self.resize(1500, 920)
         self.setMinimumSize(1040, 680)
-        self.history = TransferHistory()
-        self.workflows = WorkflowStore()
+        portable = portable_data()
+        self.history = TransferHistory(portable / 'transfer_history.sqlite3') if portable else TransferHistory()
+        self.workflows = WorkflowStore(portable / 'workflows.sqlite3') if portable else WorkflowStore()
         self.workflow_running = set()
         self.tray = None
         self._tray_force_quit = False
@@ -80,9 +84,11 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self._quit_timer.setInterval(250)
         self._quit_timer.timeout.connect(self._advance_shutdown)
         self.store = ProfileStore()
+        self.loaded_profile = None
         self.local_path = Path.home()
         self.sessions: dict[RemoteTab, ConnectionSession] = {}
-        self.preferences = QSettings('Zyvelia', 'ZFTP')
+        self.preferences = (QSettings(str(portable / 'settings.ini'), QSettings.IniFormat) if portable
+                            else QSettings('Zyvelia', 'ZFTP'))
         self.setup_presentation()
         self.queue = TransferQueue()
         self.queue.paused = self.preferences.value('queue/paused', False, type=bool)
@@ -99,6 +105,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.queue_recovery = QueueRecovery(queue_path, recovery_disabled)
         self._queue_checkpoint = None
         self._queue_save_warning = False
+        self.global_limiter = SharedRateLimiter()
         self.transfer_metrics = {}  # transfer id -> ETAEstimator
         self.transfer_tabs: dict[str, RemoteTab] = {}
         self.main_sections = QTabWidget()
@@ -116,6 +123,8 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.main_sections.addTab(self.sftp_server_panel, "SFTP · OFF")
         self.nfs_server_panel = NFSServerPanel(self)
         self.main_sections.addTab(self.nfs_server_panel, "NFS · OFF")
+        self.phone_drop_panel = PhoneDropPanel(self)
+        self.main_sections.addTab(self.phone_drop_panel, 'Phone Drop')
 
         shell = QHBoxLayout(root)
         shell.setContentsMargins(0, 0, 0, 0)
@@ -138,6 +147,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             ('ftp_server', 'FTP/FTPS Server'),
             ('sftp_server', 'SFTP Server'),
             ('nfs_server', 'NFS Server'),
+            ('phone_drop', 'Phone Drop'),
             ('settings', 'Settings'),
             ('about', 'About'),
         ):
@@ -150,6 +160,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
                 'ftp_server': QStyle.SP_DriveNetIcon,
                 'sftp_server': QStyle.SP_DriveNetIcon,
                 'nfs_server': QStyle.SP_DriveNetIcon,
+                'phone_drop': QStyle.SP_ArrowDown,
                 'settings': QStyle.SP_FileDialogContentsView,
                 'about': QStyle.SP_MessageBoxInformation,
             }
@@ -210,6 +221,16 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         conn.setVerticalSpacing(6)
         self.protocol_select = QComboBox(); self.protocol_select.addItems(['FTPS', 'SFTP', 'FTP'])
         self.protocol_select.setMinimumWidth(88)
+        self.connection_name = QLineEdit()
+        self.connection_name.setPlaceholderText('Connection name (for example PS4 or NAS)')
+        self.connection_name.setMaxLength(100)
+        self.connection_limit = QSpinBox()
+        self.connection_limit.setRange(0, 1048576)
+        self.connection_limit.setSpecialValueText('Use global limit')
+        self.connection_limit.setSuffix(' KiB/s')
+        self.connection_limit.setToolTip('Combined limit for this connection’s transfers.')
+        conn.addWidget(self.connection_name, 2, 0, 1, 4)
+        conn.addWidget(self.connection_limit, 2, 4, 1, 2)
         self.host = QLineEdit(); self.host.setPlaceholderText('Server hostname or IP address')
         self.port = QLineEdit('21'); self.port.setFixedWidth(66)
         self.user = QLineEdit('anonymous'); self.user.setPlaceholderText('Username')
@@ -410,9 +431,30 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.transfer_options_toggle.toggled.connect(self.transfer_options.setVisible)
         self.transfer_options_toggle.toggled.connect(lambda state: self.transfer_options_toggle.setText('⚙ Settings  ▾' if state else '⚙ Settings  ▸'))
         transfer_layout.addWidget(self.transfer_options)
-        self.stage_ribbon = QLabel('No active transfers')
+        self.compact_queue = QCheckBox('Compact queue')
+        self.compact_queue.setChecked(self.preferences.value('queue/compact', True, type=bool))
+        self.compact_queue.toggled.connect(lambda checked: self.change_transfer_view('queue/compact', checked))
+        self.decimal_units = QCheckBox('Decimal units (MB)')
+        self.decimal_units.setChecked(self.preferences.value('display/decimal', False, type=bool))
+        self.decimal_units.toggled.connect(lambda checked: self.change_transfer_view('display/decimal', checked))
+        self.interactive_reserve = QSpinBox()
+        self.interactive_reserve.setRange(0, 90)
+        self.interactive_reserve.setValue(self.preferences.value('transfer/reserve', 15, type=int))
+        self.interactive_reserve.setSuffix('%')
+        self.interactive_reserve.setToolTip('Bandwidth left free for browsing when a transfer limit is set.')
+        self.interactive_reserve.valueChanged.connect(lambda value: self.preferences.setValue('transfer/reserve', value))
+        self.bandwidth_limit.setValue(self.preferences.value('transfer/globalLimit', 0, type=int))
+        self.bandwidth_limit.valueChanged.connect(lambda value: self.preferences.setValue('transfer/globalLimit', value))
+        self.bandwidth_limit.valueChanged.connect(self.update_transfer_limits)
+        self.interactive_reserve.valueChanged.connect(self.update_transfer_limits)
+        self.update_transfer_limits()
+        options.addWidget(self.compact_queue, 2, 0, 1, 2)
+        options.addWidget(self.decimal_units, 2, 2)
+        options.addWidget(QLabel('Browsing reserve'), 2, 3)
+        options.addWidget(self.interactive_reserve, 2, 4)
+        self.stage_ribbon = QLabel('0 active · 0 queued · 0 failed')
         self.stage_ribbon.setObjectName('stageRibbon')
-        self.stage_ribbon.setToolTip('Shows the stage of the first running transfer.')
+        self.stage_ribbon.setToolTip('Queue totals and combined speed across running jobs.')
         transfer_layout.addWidget(self.stage_ribbon)
         self.queue_table = QTableWidget(0, 8)
         self.queue_table.setHorizontalHeaderLabels(['Server', 'Direction', 'File', 'Progress', 'Speed', 'ETA', 'Attempts', 'Status'])
@@ -427,6 +469,11 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.queue_table.setShowGrid(False)
         self.queue_table.verticalHeader().setDefaultSectionSize(42)
         self.queue_table.setMinimumHeight(100)
+        self.queue_table.setColumnWidth(1, 105)
+        self.queue_table.setColumnWidth(3, 145)
+        self.queue_table.setColumnWidth(4, 175)
+        self.queue_table.setColumnWidth(7, 106)
+        self.queue_table.verticalHeader().hide()
         self.queue_table.setToolTip('Select a job for details, cancel or clear finished operations')
         transfer_layout.addWidget(self.queue_table)
         self.verify_checksums = QCheckBox('Full SHA-256 verification (slower)')
@@ -582,6 +629,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.sidebar_buttons['connection'].setProperty('selected', True)
         self.refresh_server_badge()
         self.update_active()
+        self.render_queue()
 
     def show_help(self):
         dialog = HelpDialog(self)
@@ -609,6 +657,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             'ftp_server': self.server_panel,
             'sftp_server': self.sftp_server_panel,
             'nfs_server': self.nfs_server_panel,
+            'phone_drop': self.phone_drop_panel,
         }
         if section in server_pages:
             if self.streamer_enabled:
@@ -640,6 +689,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
             ('FTP/FTPS', self.server_panel, self.server_panel.controller.running),
             ('SFTP', self.sftp_server_panel, self.sftp_server_panel.controller.running),
             ('NFS', self.nfs_server_panel, self.nfs_server_panel.running),
+            ('Phone Drop', self.phone_drop_panel, self.phone_drop_panel.active_or_stopping),
         )
         running = []
         for protocol, panel, active in servers:
@@ -723,7 +773,29 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         remaining = sum(job.status == 'Queued' for job in jobs) + len(self.queue_recovery.waiting)
         pause = 'Paused · ' if self.queue.paused else ''
         self.footer_jobs.setText(f'{pause}{len(running)} active · {remaining} waiting · {done} completed')
-        self.footer_speed.setText(f'↑ {upload / 1024:.1f} KiB/s  ↓ {download / 1024:.1f} KiB/s')
+        self.footer_speed.setText(f'↑ {self.display_rate(upload)}  ↓ {self.display_rate(download)}')
+
+    def update_transfer_limits(self, *_):
+        reserve = self.interactive_reserve.value()
+        self.global_limiter.configure(self.bandwidth_limit.value(), reserve)
+        for state in self.sessions.values():
+            state.limiter.configure(state.bandwidth_kib, reserve)
+
+    def change_transfer_view(self, key, enabled):
+        self.preferences.setValue(key, enabled)
+        self.render_queue()
+        if key == 'display/decimal':
+            self.set_local_path(self.local_path)
+            for tab in self.sessions:
+                tab.show_entries()
+            self.refresh_tray_status()
+            self.phone_drop_panel.refresh(force=True)
+
+    def display_size(self, value):
+        return format_size(value, self.decimal_units.isChecked())
+
+    def display_rate(self, value):
+        return format_rate(value, self.decimal_units.isChecked())
 
     def protocol_changed(self, protocol):
         self.port.setText('22' if protocol == 'SFTP' else '21')

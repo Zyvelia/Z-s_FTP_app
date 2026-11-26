@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QForm
     QPushButton, QSpinBox, QTextEdit, QVBoxLayout, QWidget)
 from zftp.servers.server_core import ServerAccount, ServerConfig, ServerController
 
+from zftp.ui.server_clients import clients_button
+
 
 class ServerSignals(QObject):
     log = Signal(str)
@@ -57,6 +59,7 @@ class ServerPanel(QWidget):
         self.stop_btn = QPushButton('Stop server')
         self.status = QLabel('Stopped')
         controls.addWidget(self.start_btn); controls.addWidget(self.stop_btn); controls.addWidget(self.status, 1)
+        controls.addWidget(clients_button(self))
         layout.addLayout(controls)
         layout.addWidget(QLabel('Server activity (current session only)'))
         self.activity = QTextEdit(); self.activity.setReadOnly(True); self.activity.setMaximumHeight(155)

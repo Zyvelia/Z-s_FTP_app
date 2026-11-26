@@ -8,15 +8,16 @@ from pathlib import Path, PurePosixPath
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QImage, QImageReader, QPixmap
 from PIL import Image
+from shiboken6 import isValid
 from PySide6.QtWidgets import (
-    QDialog, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QDialog, QInputDialog, QLineEdit, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
 from zftp.services.archive_preview import archive_listing, archive_member
 from zftp.services.file_preview import MEDIA_LIMIT, OPAQUE_SUFFIXES, read_local_copy
 from zftp.services.format_preview import (
-    ARCHIVE_READ_LIMIT, PLAYBACK_SUFFIXES, ArchiveBudgetExceeded, ArchiveReader, FONT_SUFFIXES, HEADER_LIMIT,
+    ARCHIVE_READ_LIMIT, PLAYBACK_SUFFIXES, ArchiveBudgetExceeded, ArchivePasswordRequired, ArchiveReader, FONT_SUFFIXES, HEADER_LIMIT,
     HEADER_SUFFIXES, IMAGE_SUFFIXES, archive_kind, hex_preview, inspect_format,
 )
 from zftp.services.param_sfo import ParamSfo
@@ -149,8 +150,8 @@ class FormatPreviewMixin:
 
     def show_archive(self, name, entries, total, open_entry):
         table = table_view(
-            ['Name', 'Bytes', 'Compressed bytes'],
-            [(entry.name, entry.size, entry.compressed if entry.compressed is not None else '—')
+            ['Name', 'Size', 'Compressed size'],
+            [(entry.name, self.display_size(entry.size), self.display_size(entry.compressed) if entry.compressed is not None else '—')
              for entry in entries],
         )
         table.horizontalHeader().resizeSection(0, 490)
@@ -168,7 +169,7 @@ class FormatPreviewMixin:
         else:
             note = f'{total:,} entries'
         note += ' · Double-click a file to preview it.'
-        preview_dialog(self, name, table, note)
+        return preview_dialog(self, name, table, note)
 
     def show_archive_entry(self, member, data):
         title = PurePosixPath(member.name).name
@@ -178,23 +179,65 @@ class FormatPreviewMixin:
         else:
             self.open_file_preview(title, data, None)
 
-    def preview_cached_archive(self, name, data, kind='.zip'):
-        def opened(result):
+    def open_archive_session(self, name, read, start):
+        password = None
+
+        def request(label, member, opened, owner):
+            supplied_password = password
+
+            def operation():
+                try:
+                    return read(member, supplied_password)
+                except ArchivePasswordRequired as error:
+                    return error
+
+            def done(result):
+                nonlocal password
+                if not isValid(owner):
+                    return
+                if not isinstance(result, ArchivePasswordRequired):
+                    opened(result)
+                    return
+                entered, accepted = QInputDialog.getText(owner, 'Archive password', str(result), QLineEdit.Password)
+                if accepted and entered:
+                    password = entered
+                    request(label, member, opened, owner)
+
+            start(label, operation, done)
+
+        def listed(result):
             entries, total = result
 
             def open_entry(member):
-                self.run_local_file_job(lambda _: archive_member(BytesIO(data), kind, member),
-                                        lambda content: self.show_archive_entry(member, content))
+                request(f'Opening {PurePosixPath(member.name).name}', member,
+                        lambda data: self.show_archive_entry(member, data), dialog)
 
-            self.show_archive(name, entries, total, open_entry)
+            def clear_password():
+                nonlocal password
+                password = None
 
-        self.run_local_file_job(lambda _: archive_listing(BytesIO(data), kind), opened)
+            dialog = self.show_archive(name, entries, total, open_entry)
+            dialog.finished.connect(clear_password)
+
+        request(f'Opening {name}', None, listed, self)
+
+    def start_local_archive_job(self, label, operation, done):
+        return self.run_local_file_job(lambda _: operation(), done)
+
+    def preview_cached_archive(self, name, data, kind='.zip'):
+        def read(member, password):
+            source = BytesIO(data)
+            if member is None:
+                return archive_listing(source, kind, password)
+            return archive_member(source, kind, member, password)
+
+        self.open_archive_session(name, read, self.start_local_archive_job)
 
     def preview_local_format(self, path):
         suffix = path.suffix.lower()
         kind = archive_kind(path.name)
         if kind:
-            def read_archive(member=None):
+            def read_archive(member, password):
                 with path.open('rb') as file:
                     def read_at(offset, length):
                         file.seek(offset)
@@ -202,19 +245,10 @@ class FormatPreviewMixin:
 
                     with ArchiveReader(file.seek(0, 2), read_at) as source:
                         if member is None:
-                            return archive_listing(source, kind)
-                        return archive_member(source, kind, member)
+                            return archive_listing(source, kind, password)
+                        return archive_member(source, kind, member, password)
 
-            def opened(result):
-                entries, total = result
-
-                def open_entry(member):
-                    self.run_local_file_job(lambda _: read_archive(member),
-                                            lambda data: self.show_archive_entry(member, data))
-
-                self.show_archive(path.name, entries, total, open_entry)
-
-            self.run_local_file_job(lambda _: read_archive(), opened)
+            self.open_archive_session(path.name, read_archive, self.start_local_archive_job)
             return
 
         if suffix in PLAYBACK_SUFFIXES:
@@ -287,7 +321,7 @@ class FormatPreviewMixin:
                     lambda data: self.preview_cached_archive(name, data, kind))
                 return
 
-            def read_archive(member=None):
+            def read_archive(member, password):
                 size = backend.file_size(name)
                 if size is None:
                     size = entry.size
@@ -313,21 +347,12 @@ class FormatPreviewMixin:
                 try:
                     with ArchiveReader(size, read_at) as source:
                         if member is None:
-                            return archive_listing(source, kind)
-                        return archive_member(source, kind, member)
+                            return archive_listing(source, kind, password)
+                        return archive_member(source, kind, member, password)
                 except FTPError as error:
                     raise OSError(f'Could not read archive ranges from the server. Download it to browse locally. {error}') from error
 
-            def opened(result):
-                entries, total = result
-
-                def open_entry(member):
-                    run(f'Opening {PurePosixPath(member.name).name}', lambda: read_archive(member),
-                        lambda data: self.show_archive_entry(member, data))
-
-                self.show_archive(name, entries, total, open_entry)
-
-            run(f'Opening {name}', read_archive, opened)
+            self.open_archive_session(name, read_archive, run)
             return
 
         if suffix in PLAYBACK_SUFFIXES:

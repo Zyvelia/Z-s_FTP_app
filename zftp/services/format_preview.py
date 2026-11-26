@@ -322,6 +322,10 @@ class ArchiveReader(RawIOBase):
         return data
 
 
+class ArchivePasswordRequired(ValueError):
+    """The current preview session needs an archive password."""
+
+
 def zip_listing(source):
     with ZipFile(source) as archive:
         entries = archive.infolist()
@@ -331,7 +335,7 @@ def zip_listing(source):
         ], len(entries)
 
 
-def zip_member(source, member):
+def zip_member(source, member, password=None):
     with ZipFile(source) as archive:
         entries = archive.infolist()
         if member.index >= len(entries):
@@ -339,14 +343,31 @@ def zip_member(source, member):
         item = entries[member.index]
         if (item.filename, item.CRC, item.file_size) != (member.name, member.crc, member.size):
             raise ValueError('ZIP contents changed. Reopen the archive.')
-        if item.is_dir() or item.flag_bits & 1:
-            raise ValueError('This ZIP entry is a folder or is password protected.')
-        if item.compress_type not in (ZIP_STORED, ZIP_DEFLATED):
+        if item.is_dir():
+            raise ValueError('Select a file in the ZIP archive.')
+        encrypted = bool(item.flag_bits & 1)
+        if encrypted and password is None:
+            raise ArchivePasswordRequired('Enter the ZIP password.')
+        is_aes = item.compress_type == 99
+        if item.compress_type not in (ZIP_STORED, ZIP_DEFLATED, 99):
             raise ValueError('This compression method is unavailable for entry previews.')
         if item.file_size > ARCHIVE_MEMBER_LIMIT or item.compress_size > ARCHIVE_MEMBER_LIMIT:
             raise ValueError('ZIP entry previews are limited to 1 MiB.')
-        with archive.open(item) as stream:
-            data = stream.read(ARCHIVE_MEMBER_LIMIT + 1)
+        key = password.encode('utf-8') if encrypted else None
+        try:
+            if is_aes:
+                from pyzipper import AESZipFile
+                with AESZipFile(source) as aes:
+                    aes_entry = aes.infolist()[member.index]
+                    with aes.open(aes_entry, pwd=key) as stream:
+                        data = stream.read(ARCHIVE_MEMBER_LIMIT + 1)
+            else:
+                with archive.open(item, pwd=key) as stream:
+                    data = stream.read(ARCHIVE_MEMBER_LIMIT + 1)
+        except RuntimeError as error:
+            if encrypted:
+                raise ArchivePasswordRequired('The ZIP password did not work.') from error
+            raise
         if len(data) > ARCHIVE_MEMBER_LIMIT:
             raise ValueError('ZIP entry exceeds the preview limit.')
         return data

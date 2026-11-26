@@ -82,15 +82,72 @@ class TransfersViewMixin:
         if not any(valid[n].is_dir for n in names):
             self.enqueue_downloads(tab, names, root, local)
             return
-        selected = set(names)
+        state.pending_folder_scans.append((tuple(names), root, Path(local)))
+        if state.busy:
+            self.log('Folder scan queued while the server connection is busy.')
+        self.start_pending_folder_scan(tab)
+
+    def start_pending_folder_scan(self, tab):
+        state = tab.state
+        if state.busy or not state.pending_folder_scans:
+            return False
+        names, root, local = state.pending_folder_scans.pop(0)
+
         def scan(_):
-            remote = inventory_remote(state.backend, root, lambda: state.cancelled, selected=selected)
-            local_inv = inventory_local(local, lambda: state.cancelled, selected=selected)
-            return plan(local_inv, remote, 'download')
-        def ready(changes):
+            changes, unreadable = [], []
+            for name in names:
+                try:
+                    remote = inventory_remote(state.backend, root, lambda: state.cancelled, selected={name})
+                    changes.extend(plan(Inventory({}, frozenset()), remote, 'download'))
+                except InterruptedError:
+                    raise
+                except (OSError, ftplib.Error, ValueError) as error:
+                    unreadable.append(f'{name}: {error}')
+            return changes, unreadable
+
+        def ready(result):
+            changes, unreadable = result
+            if unreadable:
+                QMessageBox.warning(self, 'Some folders could not be read', self.private_text('\n'.join(unreadable[:15])))
+            if not changes:
+                return
+            prefix_map = self.download_root_names(local, [change.path for change in changes
+                                                          if '/' not in change.path])
             self.show_changes_and_enqueue(tab, changes, root, local, 'Download selected folders',
-                                          folder_batch=names[0] if len(names) == 1 else 'Selected items')
-        self.run_session_job(tab, 'Comparing remote folders', scan, ready)
+                                          folder_batch=names[0] if len(names) == 1 else 'Selected items',
+                                          prefix_map=prefix_map)
+
+        return self.run_session_job(tab, 'Reading selected folders', scan, ready)
+
+    def download_root_names(self, local, names):
+        local = Path(local).resolve()
+        used = {child.name.casefold() for child in local.iterdir()}
+        for job in self.queue.active_parts():
+            if job.direction not in ('download', 'mkdir_local'):
+                continue
+            target = Path(job.destination).resolve()
+            if target.is_relative_to(local) and target != local:
+                used.add(target.relative_to(local).parts[0].casefold())
+        planned = set(used) | {name.casefold() for name in names}
+        result = {}
+        for name in names:
+            if name.casefold() not in used:
+                result[name] = name
+                used.add(name.casefold())
+                continue
+            index = 2
+            while f'{name} ({index})'.casefold() in planned:
+                index += 1
+            new_name = f'{name} ({index})'
+            planned.add(new_name.casefold())
+            result[name] = new_name
+        return result
+
+    @staticmethod
+    def download_relative(path, prefix_map):
+        first, slash, tail = path.partition('/')
+        return prefix_map.get(first, first) + slash + tail
+
     def upload(self):
         tab = self.current_tab()
         if not tab or not tab.state.connected or tab.state.closing: return
@@ -138,7 +195,7 @@ class TransfersViewMixin:
         def ready(changes):
             self.show_changes_and_enqueue(tab, changes, remote_root, local_root, choice)
         self.run_session_job(tab, 'Comparing directory trees', scan, ready)
-    def show_changes_and_enqueue(self, tab, changes, remote_root, local_root, title, *, folder_batch=None):
+    def show_changes_and_enqueue(self, tab, changes, remote_root, local_root, title, *, folder_batch=None, prefix_map=None):
         """Explicit preview and confirmation before adding any recursive jobs."""
         if tab not in self.sessions or not tab.state.connected: return
         dialog = QDialog(self); dialog.setWindowTitle(title + ' — preview')
@@ -151,14 +208,14 @@ class TransfersViewMixin:
             layout.addWidget(location)
         layout.addWidget(QLabel('No files are deleted or overwritten. Same-size matches are NOT checksum-verified.'))
         table = QTableWidget(len(changes), 4)
-        table.setHorizontalHeaderLabels(['Action', 'Relative path', 'Local bytes', 'Remote bytes'])
+        table.setHorizontalHeaderLabels(['Action', 'Relative path', 'Local size', 'Remote size'])
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         for row, change in enumerate(changes):
-            for col, value in enumerate((change.kind, change.path,
-                                         '—' if change.local_size is None else str(change.local_size),
-                                         '—' if change.remote_size is None else str(change.remote_size))):
+            for col, value in enumerate((change.kind, self.download_relative(change.path, prefix_map or {}),
+                                         '—' if change.local_size is None else self.display_size(change.local_size),
+                                         '—' if change.remote_size is None else self.display_size(change.remote_size))):
                 table.setItem(row, col, QTableWidgetItem(value))
         layout.addWidget(table)
         conflict_count = sum(c.kind in ('conflict','same_size','type_conflict') for c in changes)
@@ -174,8 +231,8 @@ class TransfersViewMixin:
         cancel.clicked.connect(dialog.reject); confirm.clicked.connect(dialog.accept)
         if dialog.exec() != QDialog.Accepted: return
         policy = 'keep_both' if conflict_option.currentIndex() == 1 else 'skip'
-        self.enqueue_changes(tab, changes, remote_root, local_root, policy, folder_batch=folder_batch)
-    def enqueue_changes(self, tab, changes, remote_root, local_root, policy='skip', *, folder_batch=None):
+        self.enqueue_changes(tab, changes, remote_root, local_root, policy, folder_batch=folder_batch, prefix_map=prefix_map)
+    def enqueue_changes(self, tab, changes, remote_root, local_root, policy='skip', *, folder_batch=None, prefix_map=None):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.closing: return
         sid = str(id(tab)); local_root = Path(local_root)
@@ -204,7 +261,7 @@ class TransfersViewMixin:
                     continue
                 relative = relpath(change.path)
                 if any(relative == b or relative.startswith(b + '/') for b in blocked): continue
-                target = safe_local_target(local_root, relative)
+                target = safe_local_target(local_root, self.download_relative(relative, prefix_map or {}))
                 parent = posixpath.join(remote_root, posixpath.dirname(relative))
                 name = relative.split('/')[-1]
                 if change.kind == 'mkdir_remote':
@@ -319,7 +376,7 @@ class TransfersViewMixin:
         self.queue.paused = paused
         self.preferences.setValue('queue/paused', paused)
         self.queue_pause_button.setText('Resume queue' if paused else 'Pause queue')
-        self.refresh_live_footer()
+        self.render_queue()
         self.refresh_tray_status()
         if not paused:
             for tab in tuple(self.sessions):
@@ -328,37 +385,27 @@ class TransfersViewMixin:
     def render_queue(self):
         self.checkpoint_queue()
         current = self.queue.jobs
-        running = next((job for job in current if job.status == 'Running'), None)
-        featured = running
-        if featured is None and current and current[-1].status == 'Completed':
-            featured = current[-1]
-        if featured is None:
-            self.stage_ribbon.setText('No active transfers')
-        else:
-            if featured.direction == 'upload':
-                stages = ['Uploading', 'Renaming']
-            elif featured.direction == 'download':
-                stages = ['Downloading', 'Finalizing']
-            else:
-                stages = ['Downloading' if featured.children else 'Processing']
-            if featured.verify_sha256 and featured.direction in ('upload', 'download'):
-                stages.insert(1, 'Verifying')
-            stages.append('Completed')
-            if featured.status == 'Completed':
-                labels = ['✓ ' + stage for stage in stages]
-            else:
-                current_idx = stages.index(featured.phase) if featured.phase in stages else 0
-                labels = [
-                    ('✓ ' if i < current_idx else '● ' if i == current_idx else '○ ') + stage
-                    for i, stage in enumerate(stages)
-                ]
-            self.stage_ribbon.setText('   ›   '.join(labels))
+        active = [job for job in current if job.status == 'Running']
+        queued = sum(job.status == 'Queued' for job in current)
+        failed = sum(job.status == 'Failed' for job in current)
+        combined = self.display_rate(sum(max(0, job.speed_bps) for job in active))
+        waiting = len(self.queue_recovery.waiting)
+        summary = f'{len(active)} active · {queued} queued · {failed} failed'
+        if waiting:
+            summary += f' · {waiting} awaiting reconnect'
+        if self.queue.paused:
+            summary = 'Paused · ' + summary
+        self.stage_ribbon.setText(summary + f'     |     {combined} total')
+        compact = self.compact_queue.isChecked()
+        self.queue_table.setHorizontalHeaderItem(4, QTableWidgetItem('Speed / ETA' if compact else 'Speed'))
+        self.queue_table.setColumnHidden(5, compact)
+        self.queue_table.setColumnHidden(6, compact)
         self.queue_table.setRowCount(len(current))
         for row, item in enumerate(current):
             tab = next((t for t in self.sessions if str(id(t)) == item.session_id), None)
-            host = self.private_text(tab.state.host) if tab else '(disconnected)'
+            host = self.connection_caption(tab) if tab else '(disconnected)'
             pct = (f'{min(100, item.count * 100 // item.total)}%' if item.total else
-                   ('—' if item.status == 'Queued' else f'{item.count:,} bytes'))
+                   ('—' if item.status == 'Queued' else self.display_size(item.count)))
             speed = getattr(item, 'speed_bps', 0.)
             eta = getattr(item, 'eta_seconds', None)
             attempts = getattr(item, 'attempts', 0)
@@ -367,7 +414,7 @@ class TransfersViewMixin:
                 pct = '100% sent' if item.direction == 'upload' else '100% received'
             folder = item.folder_progress
             transferring = item.children or stage in ('Uploading', 'Downloading')
-            speed_text = f'{speed / 1024:.1f} KiB/s' if item.status == 'Running' and speed > 0 and transferring else '—'
+            speed_text = self.display_rate(speed) if item.status == 'Running' and speed > 0 and transferring else '—'
             eta_text = ('—' if item.status in ('Queued', 'Completed', 'Failed', 'Cancelled')
                         else ('Checking…' if stage == 'Verifying' else
                               'Finishing…' if stage in ('Renaming', 'Finalizing') else format_eta(eta)))
@@ -376,14 +423,26 @@ class TransfersViewMixin:
                     eta_text = 'Size unknown'
                 elif folder.bytes_done >= folder.bytes_total:
                     eta_text = 'Finishing…'
-            for col, value in enumerate((host, ('Folder download' if item.children else item.direction.title()), item.name, pct,
-                                         speed_text, eta_text, str(attempts),
+            eta_display = eta_text
+            if compact and item.eta_seconds is not None and eta_text == format_eta(item.eta_seconds):
+                seconds = int(item.eta_seconds)
+                remaining = (f'{seconds // 3600} h {seconds // 60 % 60} min' if seconds >= 3600 else
+                             f'{seconds // 60} min' if seconds >= 60 else f'{seconds} s')
+                eta_display = f'{remaining} left'
+            shown_speed = f'{speed_text} · {eta_display}' if compact and eta_display != '—' and speed_text != '—' else (
+                eta_display if compact and speed_text == '—' else speed_text)
+            filename = item.name
+            if item.status == 'Running' and folder is not None and folder.current_file:
+                filename += '\n' + folder.current_file
+            for col, value in enumerate((host, ('↓ Folder' if item.children else item.direction.title()), filename, pct,
+                                         shown_speed, eta_text, str(attempts),
                                          stage + (': ' + item.error if item.error else ''))):
                 if col == 3:
                     continue  # Progress is a proper widget rather than text-only.
                 cell = QTableWidgetItem(self.private_text(value))
-                if col == 2 and item.direction == 'download':
-                    cell.setToolTip(self.private_text(item.destination))
+                if col == 2:
+                    cell.setToolTip(self.private_text(filename + '\n' + item.destination))
+                    cell.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
                 if col == 7:
                     if item.status == 'Completed':
                         cell.setForeground(QColor('#7ce0ac'))
@@ -409,7 +468,7 @@ class TransfersViewMixin:
                 if folder is not None and folder.bytes_total:
                     value = min(100, int(100 * folder.bytes_done / folder.bytes_total))
                     bar.setValue(100 if item.status == 'Completed' else value)
-                    bar.setFormat(f'%p% · {item.count}/{item.total}')
+                    bar.setFormat('%p% of bytes')
                 else:
                     bar.setFormat(f'{item.count} / {item.total} items')
             elif item.status == 'Running' and value == 100:
@@ -421,7 +480,15 @@ class TransfersViewMixin:
             else:
                 bar.setFormat('Queued' if item.status == 'Queued' else stage)
             bar.setProperty('complete', item.status == 'Completed')
-            bar_row.addWidget(bar)
+            if item.children and folder is not None and folder.bytes_total:
+                bar_row.setDirection(QHBoxLayout.TopToBottom)
+                bar_row.setSpacing(0)
+                bar_row.addWidget(bar)
+                label = QLabel(f'{item.count:,} of {item.total:,} items')
+                label.setAlignment(Qt.AlignCenter)
+                bar_row.addWidget(label)
+            else:
+                bar_row.addWidget(bar)
             self.queue_table.setCellWidget(row, 3, widget)
         self.queue_table.resizeColumnToContents(0)
         self.refresh_live_footer()
@@ -450,6 +517,8 @@ class TransfersViewMixin:
     def pump_queue(self, tab):
         state = self.sessions.get(tab)
         if not state or not state.connected or state.busy or state.closing or self._quit_requested: return
+        if self.start_pending_folder_scan(tab):
+            return
         sid = str(id(tab))
         make_connection = getattr(tab, 'make_download_connection', None)
         parallel = state.parallel_downloads and make_connection is not None
@@ -475,7 +544,8 @@ class TransfersViewMixin:
 
         settings = TransferSettings(self.bandwidth_limit.value(),
                                     self.retry_limit.value(), self.backoff_delay.value(),
-                                    self.chunk_select.currentData())
+                                    self.chunk_select.currentData(),
+                                    state.limiter if state.bandwidth_kib else self.global_limiter)
         item.attempts = 1
         item.speed_bps = 0.
         item.eta_seconds = None
@@ -567,17 +637,16 @@ class TransfersViewMixin:
                     known_bytes += size - (previous or 0)
                     unknown_sizes -= int(previous is None)
 
-            def report(items_done, bytes_done, status):
+            def report(items_done, bytes_done, status, current_file):
                 total = known_bytes if not unknown_sizes else None
-                progress(FolderProgress(items_done, bytes_done, total, status), None)
+                progress(FolderProgress(items_done, bytes_done, total, status, current_file), None)
 
             for index, child in enumerate(item.children):
                 if cancelled():
                     raise InterruptedError('Folder download cancelled')
                 target = Path(child.destination)
                 safe_local_target(root, target.relative_to(root).as_posix())
-                label = f'{index + 1}/{len(item.children)} · {target.name}'
-                report(index, completed_bytes, label)
+                report(index, completed_bytes, 'Downloading', target.name)
                 next_update = 0.0
                 observed = 0
 
@@ -585,13 +654,13 @@ class TransfersViewMixin:
                     nonlocal next_update, observed
                     if isinstance(count, str):
                         report(index, completed_bytes + observed,
-                               f"{label} · {count.removeprefix('@stage:')}")
+                               count.removeprefix('@stage:'), target.name)
                         return
                     observed = count
                     update_size(index, total)
                     now = time.monotonic()
                     if now >= next_update:
-                        report(index, completed_bytes + observed, label)
+                        report(index, completed_bytes + observed, 'Downloading', target.name)
                         next_update = now + 0.15
 
                 try:
@@ -606,7 +675,7 @@ class TransfersViewMixin:
                     raise RuntimeError(f'{target.relative_to(root)}: {exc}') from exc
                 update_size(index, size)
                 completed_bytes += size
-                report(index + 1, completed_bytes, label)
+                report(index + 1, completed_bytes, 'Downloading', target.name)
 
             return (completed_bytes, None)
 

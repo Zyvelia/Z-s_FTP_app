@@ -8,6 +8,7 @@ import os
 import time
 import posixpath
 from pathlib import Path
+from ftplib import Error as FTPError
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Qt, QTimer, QFile, QSize, QUrl
 from PySide6.QtGui import QShortcut, QKeySequence, QCursor, QIcon, QColor, QDesktopServices
 from zftp.services.directory_performance import scan_directory, batches, RenderGate, UpdateThrottle
@@ -98,7 +99,7 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
                 for offset, item in enumerate(chunk):
                     row = batch_number * 200 + offset
                     for column, value in enumerate((item.name, 'Folder' if item.is_dir else 'File',
-                                                    '' if item.is_dir else item.size)):
+                                                    '' if item.is_dir else self.display_size(item.size))):
                         table.setItem(row, column, QTableWidgetItem(str(value)))
                 table.setUpdatesEnabled(True)
                 QTimer.singleShot(0, render_chunk)
@@ -309,11 +310,17 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
         self.set_local_path(self.local_path)
     def remote_context_menu(self, tab, point):
         state = self.sessions.get(tab)
-        if not state or not state.connected or state.busy or state.closing:
+        if not state or not state.connected or state.closing:
             return
         row = self._context_row(tab.table, point)
         entry = tab.selected() if row >= 0 else None
         menu = QMenu(self)
+        if state.busy:
+            if entry and not entry.is_link:
+                download_only = menu.addAction('Queue download…')
+                if menu.exec(tab.table.viewport().mapToGlobal(point)) == download_only:
+                    self.download(tab)
+            return
         if entry is not None:
             open_action = menu.addAction('Open folder') if entry.is_dir else None
             download_action = menu.addAction('Download') if not entry.is_dir else menu.addAction('Download folder')
@@ -371,13 +378,20 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
         if key_filename and not Path(key_filename).is_file():
             QMessageBox.warning(self, 'SSH private key', 'Key file does not exist.'); return
         backend = SFTPBackend() if protocol == 'SFTP' else FTPBackend()
-        state = ConnectionSession(backend, protocol, host, port, username)
+        state = ConnectionSession(backend, protocol, host, port, username,
+                                  display_name=self.connection_name.text().strip(),
+                                  bandwidth_kib=self.connection_limit.value())
+        profile = self.loaded_profile
+        if profile and (profile.host, profile.port, profile.protocol, profile.username) != (host, port, protocol, username):
+            profile = None
         tab = RemoteTab(state)
         tab.table.remote_session_id = str(id(tab))
         tab.table.filesDropped.connect(lambda paths, t=tab: self.enqueue_local_items(t, paths))
         self.sessions[tab] = state
+        self.update_transfer_limits()
         self._connection_values.update((host, username))
         tab.display_text = self.private_text
+        tab.display_size = self.display_size
         index = self.tabs.addTab(tab, f'{protocol} · Server')
         self.update_private_tab(tab)
         self.tabs.setCurrentIndex(index)
@@ -418,6 +432,13 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
 
         def connection(_):
             cwd = login(backend)
+            if profile and profile.remote_path:
+                try:
+                    backend.cwd(profile.remote_path)
+                except (OSError, RuntimeError, FTPError):
+                    pass
+                else:
+                    cwd = backend.pwd()
             return cwd, backend.list_dir()
         def after(result):
             state.connected = True
@@ -428,6 +449,8 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             tab.show_entries()
             if self.connection_setup.isVisible():
                 self.toggle_connection_setup()
+            if profile and profile.local_path and Path(profile.local_path).is_dir():
+                self.set_local_path(Path(profile.local_path))
             self.restore_queue(tab)
             self.notify('success', 'Connected', f'{protocol} · {host}:{port}', category='connection')
         def on_error(exc):

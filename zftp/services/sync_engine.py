@@ -6,7 +6,8 @@ by the calling worker. No overwrite or delete operations are produced.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
+import os
 import posixpath
 import stat
 
@@ -147,7 +148,13 @@ def safe_local_target(root: Path, relative: str) -> Path:
     root = Path(root)
     if root.is_symlink(): raise ValueError('Local root is a symlink')
     relative = relpath(relative)
-    target = root.joinpath(*relative.split('/'))
+    parts = relative.split('/')
+    if os.name == 'nt' and any(
+            PureWindowsPath(part).is_reserved() or part.endswith(('.', ' '))
+            or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
+            for part in parts):
+        raise ValueError(f'Unsupported Windows destination name: {relative}')
+    target = root.joinpath(*parts)
     # No symlink traversal into directories, including intermediate ancestors.
     ancestor = target.parent
     while ancestor != root and ancestor != ancestor.parent:

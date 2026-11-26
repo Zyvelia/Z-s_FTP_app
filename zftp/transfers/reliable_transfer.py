@@ -13,6 +13,7 @@ import socket
 import stat
 import time
 from dataclasses import dataclass
+from threading import Lock
 from pathlib import Path
 from typing import Callable
 
@@ -30,6 +31,8 @@ class TransferSettings:
     retries: int = 3
     backoff: float = 1.0
     chunk_kib: int = 64  # FTP/SFTP I/O chunk size: safe, per-job snapshot
+
+    shared_limiter: SharedRateLimiter | None = None
 
     def __post_init__(self):
         if not 0 <= self.bandwidth_kib <= 1024 * 1024:
@@ -65,6 +68,33 @@ class RateLimiter:
             if remaining <= 0:
                 break
             self.sleep(min(remaining, 0.1))
+
+class SharedRateLimiter:
+    """Apply a combined byte rate to every worker using this connection."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._rate = 0
+        self._deadline = 0.0
+
+    def configure(self, kib_per_second, reserve_percent=0):
+        rate = kib_per_second * 1024 * (100 - reserve_percent) / 100
+        with self._lock:
+            if rate != self._rate:
+                self._rate = rate
+                self._deadline = 0.0
+
+    def consume(self, count, cancelled):
+        with self._lock:
+            if not self._rate:
+                return
+            now = time.monotonic()
+            self._deadline = max(now, self._deadline) + count / self._rate
+            deadline = self._deadline
+        while deadline > time.monotonic():
+            _check(cancelled)
+            time.sleep(max(0, min(deadline - time.monotonic(), 0.1)))
+
 
 def _check(cancelled):
     if cancelled():
@@ -148,7 +178,7 @@ def download(backend, name: str, target: Path, progress, cancelled, settings: Tr
                     remaining -= len(block)
         else:
             _ftp_prefix_matches(sftp, remote, part, offset, cancelled, chunk)
-    limiter = RateLimiter(settings.bandwidth_kib)
+    limiter = settings.shared_limiter or RateLimiter(settings.bandwidth_kib)
     written = offset
     progress(written, size)
     _check(cancelled)
@@ -225,7 +255,7 @@ def upload(backend, source: Path, name: str, progress, cancelled, settings: Tran
                     remaining -= len(block)
         else:
             _ftp_prefix_matches(conn, partial, source, offset, cancelled, chunk)
-    limiter = RateLimiter(settings.bandwidth_kib)
+    limiter = settings.shared_limiter or RateLimiter(settings.bandwidth_kib)
     progress(offset, size)
     _check(cancelled)
     if offset != size or not offset:

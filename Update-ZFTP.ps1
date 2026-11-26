@@ -78,8 +78,11 @@ try {
     if (Get-Process -Name ZFTP -ErrorAction SilentlyContinue) {
         throw 'Quit Z FTP from the window or tray, then run the updater again.'
     }
-    $process = Start-Process -FilePath $installer `
-        -ArgumentList @("/DIR=`"$PSScriptRoot`"", '/NOCLOSEAPPLICATIONS') -Wait -PassThru
+    $arguments = @("/DIR=`"$PSScriptRoot`"", '/NOCLOSEAPPLICATIONS')
+    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'zftp-portable.ini')) {
+        $arguments += '/PORTABLE=1'
+    }
+    $process = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0) {
         throw "Setup did not complete (exit code $($process.ExitCode))."
     }

@@ -20,6 +20,7 @@ from zftp.protocols.ftp_engine import FTPBackend, clean_remote_name, parent_remo
 from zftp.services.remote_cache import RemoteDirectoryCache
 from zftp.protocols.sftp_engine import SFTPBackend, UntrustedHostKey
 from zftp.services.profiles import ProfileStore
+from zftp.services.profile_import import load_profiles
 from zftp.ui.profile_dialog import ProfileDialog
 from zftp.services.sessions import ConnectionSession
 from zftp.transfers.transfer_queue import TransferQueue, Transfer
@@ -63,6 +64,9 @@ class ProfileControlsMixin:
             password = self.store.get_password(profile)
         except Exception as exc:
             QMessageBox.warning(self, 'Credential error', str(exc)); return
+        self.connection_name.setText(profile.name)
+        self.connection_limit.setValue(profile.bandwidth_kib)
+        self.loaded_profile = profile
         self.protocol_select.setCurrentText(profile.protocol)
         self.host.setText(profile.host)
         self.port.setText(str(profile.port))
@@ -75,7 +79,8 @@ class ProfileControlsMixin:
         if filename: self.ssh_key.setText(filename)
     def save_current_profile(self):
         dialog = ProfileDialog(self)
-        dialog.name.setText(self.host.text().strip())
+        dialog.name.setText(self.connection_name.text().strip() or self.host.text().strip())
+        dialog.bandwidth.setValue(self.connection_limit.value())
         dialog.host.setText(self.host.text())
         dialog.protocol.setCurrentText(self.protocol_select.currentText())
         dialog.port.setText(self.port.text())
@@ -102,7 +107,8 @@ class ProfileControlsMixin:
         controls = QHBoxLayout()
         edit = QPushButton('Edit'); delete = QPushButton('Delete')
         choose = QPushButton('Load'); close = QPushButton('Close')
-        for w in (edit, delete, choose, close): controls.addWidget(w)
+        import_button = QPushButton('Import…')
+        for w in (edit, delete, choose, import_button, close): controls.addWidget(w)
         layout.addLayout(controls)
         def refresh():
             listing.clear()
@@ -119,7 +125,7 @@ class ProfileControlsMixin:
         def do_edit():
             p = selected()
             if p:
-                editor = ProfileDialog(dialog, p)
+                editor = ProfileDialog(self, p)
                 if editor.exec() == QDialog.Accepted and self.store_dialog_profile(editor): refresh()
         def do_delete():
             p = selected()
@@ -134,6 +140,20 @@ class ProfileControlsMixin:
             index = self.profile_select.findData(p.id)
             if index >= 0: self.profile_select.setCurrentIndex(index)
             dialog.accept()
+        def do_import():
+            path, _ = QFileDialog.getOpenFileName(dialog, 'Import FileZilla sites or OpenSSH config',
+                                                  '', 'Connection files (*.xml *.conf config);;All files (*)')
+            if not path:
+                return
+            try:
+                added = self.store.add_imported(load_profiles(path))
+            except (ValueError, OSError, SyntaxError) as error:
+                QMessageBox.warning(dialog, 'Could not import connections', self.private_text(error))
+                return
+            self.refresh_profiles()
+            refresh()
+            QMessageBox.information(dialog, 'Connections imported', f'{added} new saved connection(s).')
+        import_button.clicked.connect(do_import)
         edit.clicked.connect(do_edit); delete.clicked.connect(do_delete)
         choose.clicked.connect(do_choose); close.clicked.connect(dialog.reject)
         listing.itemDoubleClicked.connect(lambda _: do_choose())

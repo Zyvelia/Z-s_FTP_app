@@ -4,6 +4,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from zftp.ui.main_window import MainWindow
+from zftp.services.storage import portable_data
 
 
 APP_NAME = "Z FTP"
@@ -38,7 +39,8 @@ def register_windows_notification_identity(icon: Path):
 
 def main():
     icon = Path(__file__).resolve().parent / "assets" / "zftp_icon.png"
-    register_windows_notification_identity(icon)
+    if portable_data() is None:
+        register_windows_notification_identity(icon)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)

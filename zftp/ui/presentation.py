@@ -68,7 +68,7 @@ class PresentationMixin:
     def set_streamer_mode(self, enabled):
         self.streamer_enabled = enabled
         self.preferences.setValue('privacy/streamer', enabled)
-        for field in (self.host, self.user, self.port, self.ssh_key):
+        for field in (self.connection_name, self.host, self.user, self.port, self.ssh_key):
             field.setEchoMode(field.EchoMode.Password if enabled else field.EchoMode.Normal)
         self._connection_values.update(value for state in self.sessions.values()
                                        for value in (state.host, state.username))
@@ -87,7 +87,7 @@ class PresentationMixin:
                 self.bottom_tabs.setCurrentIndex(0)
         for index in range(1, self.main_sections.count()):
             self.main_sections.setTabEnabled(index, not enabled)
-        for key in ('ftp_server', 'sftp_server', 'nfs_server'):
+        for key in ('ftp_server', 'sftp_server', 'nfs_server', 'phone_drop'):
             self.sidebar_buttons[key].setEnabled(not enabled)
         self.bottom_tabs.setTabEnabled(self.bottom_tabs.indexOf(self.workflows_panel), not enabled)
         self.logs.setPlainText('\n'.join(self.private_text(line) for line in self._activity_lines))
@@ -99,13 +99,19 @@ class PresentationMixin:
     def update_private_tab(self, tab):
         index = self.tabs.indexOf(tab)
         state = tab.state
-        label = f'{state.protocol} · Server {index + 1}' if self.streamer_enabled else f'{state.protocol} {state.host}'
+        label = self.connection_caption(tab)
         if index >= 0:
             self.tabs.setTabText(index, label)
             self.tabs.setTabToolTip(index, label)
         tab.status.setText(self.private_text(tab.status.text()))
         if state.connected:
             tab.path_label.setText(self.private_text('Remote: ' + state.remote_path))
+
+    def connection_caption(self, tab):
+        state = tab.state
+        if self.streamer_enabled:
+            return f'{state.protocol} · Server {max(1, self.tabs.indexOf(tab) + 1)}'
+        return state.display_name or f'{state.protocol} {state.host}'
 
     def private_text(self, message):
         if not self.streamer_enabled:

@@ -14,6 +14,7 @@ from zftp.services.file_preview import HEX_LIMIT, SQLITE_HEADER, SQLiteCopy, is_
 from zftp.services.remote_management import EDITOR_ENCODINGS, decode_editor_copy
 from zftp.ui.format_preview import show_delimited
 from zftp.ui.text_editor import TextEditor, TextHighlighter
+from zftp.ui.find_replace import FindReplace
 
 
 class FilePreviewDialog(QDialog):
@@ -69,6 +70,11 @@ class FilePreviewDialog(QDialog):
             self.viewer = TextEditor()
             self.viewer.setReadOnly(True)
             layout.addWidget(self.viewer, 1)
+            self.find_panel = FindReplace(self.viewer)
+            layout.addWidget(self.find_panel)
+            self.find_button = QPushButton('Find…')
+            self.find_button.clicked.connect(self.find_panel.open_find)
+            buttons.insertWidget(1, self.find_button)
             self.encoding = QComboBox()
             self.encoding.setAccessibleName('File encoding')
             for label, codec in EDITOR_ENCODINGS:
@@ -137,6 +143,8 @@ class FilePreviewDialog(QDialog):
             self._fill_table()
         else:
             self.viewer.setReadOnly(False)
+            for widget in (self.find_panel.replacement, self.find_panel.replace_button, self.find_panel.replace_all_button):
+                widget.setEnabled(True)
 
     def _show_table(self, name):
         previous = self.table.name if self.table else ''

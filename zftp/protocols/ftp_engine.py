@@ -41,6 +41,37 @@ def unix_list_modified(fields):
         return None
 
 
+def attach_command_context(ftp, directory, password):
+    """Preserve ftplib reply classes and put the FTP code first for fallback callers."""
+    if not callable(getattr(ftp, 'putcmd', None)) or not callable(getattr(ftp, 'getresp', None)):
+        return
+    putcmd, getresp = ftp.putcmd, ftp.getresp
+    command, argument = '', ''
+    file_commands = {'CWD', 'RETR', 'STOR', 'APPE', 'SIZE', 'MDTM', 'LIST', 'MLSD',
+                     'DELE', 'RMD', 'MKD', 'RNFR', 'RNTO', 'STAT'}
+
+    def put(line):
+        nonlocal command, argument
+        command, _, raw = line.partition(' ')
+        argument = raw if command in file_commands else ''
+        return putcmd(line)
+
+    def response():
+        try:
+            return getresp()
+        except (ftplib.error_perm, ftplib.error_temp, ftplib.error_reply, ftplib.error_proto) as error:
+            reply = str(error)
+            if password:
+                reply = reply[:3] + reply[3:].replace(password, '[hidden]')
+            path = directory() or '/'
+            if argument:
+                path = posixpath.normpath(posixpath.join(path, argument))
+            safe_path = ''.join(character if character.isprintable() else '?' for character in path)
+            raise type(error)(f'{reply}\nFTP command: {command or "CONNECT"}\nRemote path: {safe_path}') from None
+
+    ftp.putcmd, ftp.getresp = put, response
+
+
 class FTPBackend:
     def __init__(self):
         self.conn: ftplib.FTP | ftplib.FTP_TLS | None = None
@@ -66,6 +97,7 @@ class FTPBackend:
             ftp = (ftplib.FTP_TLS(context=ssl.create_default_context(), timeout=timeout)
                    if tls else ftplib.FTP(timeout=timeout))
             ftp.encoding = candidate
+            attach_command_context(ftp, lambda: self._last_remote_path, password)
             try:
                 ftp.connect(host, port)
                 ftp.login(username or 'anonymous', password)

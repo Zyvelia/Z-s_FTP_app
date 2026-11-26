@@ -4,6 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from PySide6.QtCore import QIODevice, QSaveFile, QStandardPaths
+from zftp.services.storage import portable_data
 
 
 VERSION = '2.4.0'
@@ -13,6 +14,9 @@ BACKEND_SHA256 = '35cb5a74b2bf2aaa94302f5c9ed70786b61f245b96dc1f20214fe337c24af6
 
 
 def backend_path():
+    portable = portable_data()
+    if portable is not None:
+        return portable / 'nfs' / VERSION / 'WinNFSd.exe'
     local_data = QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)
     if not local_data:
         raise OSError('Windows local application data folder is unavailable')

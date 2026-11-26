@@ -111,7 +111,7 @@ class TrayControlsMixin(PresentationMixin):
         self._tray_pause_action.setText('Resume queue' if self.queue.paused else 'Pause queue after active transfers')
         speed = sum(max(0., job.speed_bps) for job in running)
         status = (f'{connected} connected · {len(running)} active · '
-                  f'{queued} queued · {recovery} awaiting reconnect · {speed / 1024:.1f} KiB/s')
+                  f'{queued} queued · {recovery} awaiting reconnect · {self.display_rate(speed)}')
         if self._tray_status_action is not None:
             self._tray_status_action.setText(status)
         self.tray.setToolTip('Z FTP\n' + status)
@@ -211,7 +211,7 @@ class TrayControlsMixin(PresentationMixin):
         if (any(state.busy for state in self.sessions.values())
                 or any(job.status in ('Queued', 'Running') for job in self.queue.jobs)
                 or self.server_panel.active_or_stopping or self.sftp_server_panel.active_or_stopping
-                or self.nfs_server_panel.active_or_stopping):
+                or self.nfs_server_panel.active_or_stopping or self.phone_drop_panel.active_or_stopping):
             self.show_from_tray()
             QMessageBox.information(self, 'Z FTP is busy',
                                     'Finish queued and active transfers and stop any active servers before updating.')

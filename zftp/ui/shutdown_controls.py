@@ -109,7 +109,7 @@ class ShutdownControlsMixin:
             event.ignore()
             return
         if (self.server_panel.active_or_stopping or self.sftp_server_panel.active_or_stopping
-                or self.nfs_server_panel.active_or_stopping):
+                or self.nfs_server_panel.active_or_stopping or self.phone_drop_panel.active_or_stopping):
             QMessageBox.information(self, 'Server running',
                                     'Stop any active servers before quitting Z FTP.')
             self._tray_force_quit = False

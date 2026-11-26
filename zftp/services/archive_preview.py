@@ -14,11 +14,13 @@ from zlib import crc32
 
 from py7zr import SevenZipFile
 from py7zr.io import BytesIOFactory
+from py7zr.exceptions import PasswordRequired, Bad7zFile, CrcError
+from lzma import LZMAError
 import rarfile
 
 from zftp.services.format_preview import (
     ARCHIVE_ENTRY_LIMIT, ARCHIVE_MEMBER_LIMIT, ARCHIVE_READ_LIMIT,
-    ArchiveBudgetExceeded, ArchiveEntry, ArchiveReader, zip_listing, zip_member,
+    ArchiveBudgetExceeded, ArchivePasswordRequired, ArchiveEntry, ArchiveReader, zip_listing, zip_member,
 )
 
 
@@ -84,15 +86,39 @@ def seven_zip_entry(index, info):
                         info.is_directory, info.is_file and not info.is_symlink)
 
 
-def archive_listing(source, kind):
+@contextmanager
+def open_7z(source, password):
+    try:
+        archive = SevenZipFile(source, password=password, max_extract_size=ARCHIVE_READ_LIMIT)
+    except PasswordRequired as error:
+        raise ArchivePasswordRequired('Enter the 7z password.') from error
+    except (Bad7zFile, CrcError, LZMAError, TypeError, ValueError, EOFError) as error:
+        if password is not None:
+            raise ArchivePasswordRequired('The 7z password did not work.') from error
+        raise
+    with archive:
+        yield archive
+
+
+@contextmanager
+def open_rar(source, password):
+    with rarfile.RarFile(source, errors='strict') as archive:
+        if password:
+            archive.setpassword(password)
+        yield archive
+
+
+def archive_listing(source, kind, password=None):
     if kind in ('.zip', '.zips'):
         return zip_listing(source)
     if kind == '.rar':
-        with rarfile.RarFile(source, errors='strict') as archive:
+        with open_rar(source, password) as archive:
             infos = archive.infolist()
+            if not infos and archive.needs_password():
+                raise ArchivePasswordRequired('Enter the RAR password.' if password is None else 'The RAR password did not work.')
             return [rar_entry(i, info) for i, info in enumerate(infos[:ARCHIVE_ENTRY_LIMIT])], len(infos)
     if kind == '.7z':
-        with SevenZipFile(source) as archive:
+        with open_7z(source, password) as archive:
             infos = archive.list()
             return [seven_zip_entry(i, info) for i, info in enumerate(infos[:ARCHIVE_ENTRY_LIMIT])], len(infos)
 
@@ -131,14 +157,14 @@ def read_member(stream, member):
     return data
 
 
-def archive_member(source, kind, member):
+def archive_member(source, kind, member, password=None):
     if kind in ('.zip', '.zips'):
-        return zip_member(source, member)
+        return zip_member(source, member, password)
     if member.size > ARCHIVE_MEMBER_LIMIT:
         raise ValueError('Archive entry previews are limited to 1 MiB.')
 
     if kind == '.rar':
-        with rarfile.RarFile(source, errors='strict') as archive:
+        with open_rar(source, password) as archive:
             infos = archive.infolist()
             info = indexed_member(infos, member)
             check_member(rar_entry(member.index, info), member)
@@ -147,14 +173,15 @@ def archive_member(source, kind, member):
                 raise ValueError('This solid RAR entry exceeds the 16 MiB preview budget.')
             if archive.getinfo(info) is not info:
                 raise ValueError('This RAR archive contains duplicate member names.')
-            if info.needs_password():
-                raise ValueError('This RAR entry is password protected.')
-            if info.compress_type == rarfile.RAR_M0:
+            encrypted = info.needs_password()
+            if encrypted and password is None:
+                raise ArchivePasswordRequired('Enter the RAR password.')
+            if info.compress_type == rarfile.RAR_M0 and not encrypted:
                 return read_member(archive.open(info), member)
             if (member.name.startswith(('-', '@', '/'))
                     or any(character in '*?[]\\' or ord(character) < 32 for character in member.name)):
                 raise ValueError('This compressed RAR entry has an unsupported name.')
-            executable = system_tar()
+            executable = None if encrypted else system_tar()
             if executable is None:
                 try:
                     rarfile.tool_setup(bsdtar=False)
@@ -169,21 +196,31 @@ def archive_member(source, kind, member):
                 path.write_bytes(data)
                 if executable:
                     return read_rar_with_tar(executable, path, member)
-                with rarfile.RarFile(path, errors='strict') as staged:
-                    return read_member(staged.open(member.name), member)
+                with open_rar(path, password) as staged:
+                    try:
+                        return read_member(staged.open(member.name, pwd=password), member)
+                    except (rarfile.BadRarFile, rarfile.RarWrongPassword, rarfile.PasswordRequired) as error:
+                        if encrypted:
+                            raise ArchivePasswordRequired('The RAR password did not work.') from error
+                        raise
 
 
     if kind == '.7z':
-        with SevenZipFile(source, max_extract_size=ARCHIVE_READ_LIMIT) as archive:
+        with open_7z(source, password) as archive:
             infos = archive.list()
             info = indexed_member(infos, member)
             check_member(seven_zip_entry(member.index, info), member)
-            if archive.needs_password():
-                raise ValueError('This 7z archive is password protected.')
+            if archive.needs_password() and password is None:
+                raise ArchivePasswordRequired('Enter the 7z password.')
             if sum(item.filename == member.name for item in infos) != 1:
                 raise ValueError('This 7z archive contains duplicate member names.')
             factory = BytesIOFactory(ARCHIVE_MEMBER_LIMIT)
-            archive.extract(targets=[member.name], factory=factory)
+            try:
+                archive.extract(targets=[member.name], factory=factory)
+            except (Bad7zFile, CrcError, LZMAError, PasswordRequired) as error:
+                if archive.needs_password():
+                    raise ArchivePasswordRequired('The 7z password did not work.') from error
+                raise
             output, = factory.products.values()
             output.seek(0)
             data = output.read(ARCHIVE_MEMBER_LIMIT + 1)

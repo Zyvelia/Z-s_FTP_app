@@ -35,7 +35,8 @@ class GUIv1SmokeTests(unittest.TestCase):
     def test_client_and_server_controls_present(self):
         window = MainWindow()
         self.assertIsNotNone(window.server_panel)
-        self.assertEqual(window.main_sections.count(), 4)
+        self.assertEqual(window.main_sections.count(), 5)
+        self.assertFalse(window.phone_drop_panel.active_or_stopping)
         self.assertEqual(window.connection_badge.text(), '0 connected')
         self.assertFalse(window.server_panel.controller.running)
         self.assertFalse(window.nfs_server_panel.active_or_stopping)
@@ -167,7 +168,8 @@ class GUIv1SmokeTests(unittest.TestCase):
                         verify.reset_mock()
                         window.queue.finish(item)
                         window.render_queue()
-                        self.assertEqual('Verifying' in window.stage_ribbon.text(), enabled)
+                        self.assertIn('0 active', window.stage_ribbon.text())
+                        self.assertEqual(item.verify_sha256, enabled)
 
     def test_two_downloads_allow_an_unrelated_delete_and_cancel_independently(self):
         window = MainWindow()
@@ -420,6 +422,30 @@ class GUIv1SmokeTests(unittest.TestCase):
         window.on_transfer_progress(folder, FolderProgress(0, 1024, None, '1/1'), None)
         window.render_queue()
         self.assertEqual(window.queue_table.item(0, 5).text(), 'Size unknown')
+
+    def test_cusa_sibling_folders_keep_distinct_destinations_and_compact_rows(self):
+        window = MainWindow()
+        self.addCleanup(window.close)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'CUSA07823').mkdir()
+            names = ['CUSA07823', 'CUSA07823-patch', 'CUSA07823-DLC-0000001', 'CUSA07823-DLC-0000002']
+            mapping = window.download_root_names(root, names)
+            self.assertEqual(mapping['CUSA07823'], 'CUSA07823 (2)')
+            self.assertTrue(all(mapping[name] == name for name in names[1:]))
+            child = Transfer('test', 'download', 'file.bin', str(root / 'file.bin'), '/remote', str(root), total=1024)
+            folder = Transfer('test', 'download_folder', names[1], str(root), '/', str(root),
+                              children=(child,), total=1)
+            folder.folder_progress = FolderProgress(0, 256, 1024, 'Downloading', 'file.bin')
+            folder.eta_seconds, folder.speed_bps = 120, 1000
+            window.queue.add(folder)
+            window.queue.next_for('test')
+            window.compact_queue.setChecked(True)
+            window.render_queue()
+            self.assertEqual(window.queue_table.item(0, 2).text(), 'CUSA07823-patch\nfile.bin')
+            self.assertTrue(window.queue_table.isColumnHidden(5))
+            self.assertIn('2 min left', window.queue_table.item(0, 4).text())
+            self.assertIn('1 active', window.stage_ribbon.text())
 
     def test_file_tools_are_only_offered_for_files(self):
         window = MainWindow()

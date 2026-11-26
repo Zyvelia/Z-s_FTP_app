@@ -54,6 +54,7 @@ class RemoteTab(QWidget):
         super().__init__(parent)
         self.state = state
         self.display_text = str
+        self.display_size = str
         self._render_gate = RenderGate()
         self.directory_cache = RemoteDirectoryCache()
         layout = QVBoxLayout(self)
@@ -118,8 +119,9 @@ class RemoteTab(QWidget):
 
     def set_controls(self):
         active = self.state.connected and not self.state.busy and not self.state.closing
-        for button in (self.up, self.refresh, self.mkdir, self.delete, self.download, self.rename_btn, self.edit_btn, self.search_btn, self.permissions_btn):
+        for button in (self.up, self.refresh, self.mkdir, self.delete, self.rename_btn, self.edit_btn, self.search_btn, self.permissions_btn):
             button.setEnabled(active)
+        self.download.setEnabled(self.state.connected and not self.state.closing)
         self.back.setEnabled(active and self.nav_index > 0)
         self.forward.setEnabled(active and self.nav_index + 1 < len(self.nav_history))
         for button in (self.rename_btn, self.edit_btn, self.permissions_btn):
@@ -153,7 +155,7 @@ class RemoteTab(QWidget):
             for offset, entry in enumerate(batch):
                 row = batch_num * 200 + offset
                 for col, value in enumerate((entry.name, 'Folder' if entry.is_dir else 'File',
-                                             '' if entry.size is None or entry.is_dir else str(entry.size))):
+                                             '' if entry.size is None or entry.is_dir else self.display_size(entry.size))):
                     self.table.setItem(row, col, QTableWidgetItem(str(value)))
             self.table.setUpdatesEnabled(True)
             QTimer.singleShot(0, append_batch)

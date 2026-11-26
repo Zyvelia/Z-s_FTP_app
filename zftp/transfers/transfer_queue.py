@@ -15,6 +15,7 @@ class FolderProgress:
     bytes_done: int
     bytes_total: int | None
     status: str
+    current_file: str = ""
 
 
 @dataclass

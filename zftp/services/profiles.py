@@ -6,11 +6,15 @@ import tempfile
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from zftp.services.storage import portable_data
 
 APP_SERVICE = 'ZFTP.connections.v1'
 
 
 def default_storage() -> Path:
+    portable = portable_data()
+    if portable is not None:
+        return portable / 'profiles.json'
     root = Path(os.environ.get('APPDATA') or (Path.home() / '.config')) / 'ZFTP'
     return root / 'profiles.json'
 
@@ -26,12 +30,18 @@ class Profile:
     favorite: bool = False
     key_path: str = ''
     save_password: bool = False
+    bandwidth_kib: int = 0
+    remote_path: str = ''
+    local_path: str = ''
 
     @classmethod
-    def create(cls, name, host, port, protocol, username, favorite=False, key_path='', save_password=False):
-        p = cls(str(uuid.uuid4()), name.strip(), host.strip(), int(port), protocol, username.strip(), bool(favorite), key_path.strip(), bool(save_password))
-        p.validate()
-        return p
+    def create(cls, name, host, port, protocol, username, favorite=False, key_path='', save_password=False,
+               *, bandwidth_kib=0, remote_path='', local_path=''):
+        profile = cls(str(uuid.uuid4()), name.strip(), host.strip(), int(port), protocol, username.strip(),
+                      bool(favorite), key_path.strip(), bool(save_password), int(bandwidth_kib),
+                      remote_path.strip(), local_path.strip())
+        profile.validate()
+        return profile
 
     def validate(self):
         if not self.id or not self.name or not self.host:
@@ -40,6 +50,10 @@ class Profile:
             raise ValueError('Unsupported protocol')
         if not 1 <= self.port <= 65535:
             raise ValueError('Port must be 1–65535')
+        if not 0 <= self.bandwidth_kib <= 1048576:
+            raise ValueError('Connection limit must be between 0 and 1,048,576 KiB/s')
+        if self.remote_path and (not self.remote_path.startswith('/') or any(ord(c) < 32 for c in self.remote_path)):
+            raise ValueError('Remote starting folder must be an absolute server path')
         if self.key_path and self.protocol != 'SFTP':
             raise ValueError('SSH keys only apply to SFTP')
 
@@ -85,22 +99,39 @@ class ProfileStore:
         old = next((p for p in existing if p.id == profile.id), None)
         # Credential changes happen before changing the profile file: no silent plaintext fallback.
         if profile.save_password:
+            if portable_data() is not None:
+                raise ValueError('Portable profiles cannot save passwords in the system credential store.')
             if password is not None:
                 self._keys().set_password(APP_SERVICE, profile.id, password)
             elif not old or not old.save_password:
                 raise ValueError('Enter a password before enabling password storage')
-        elif old and old.save_password:
+        elif old and old.save_password and portable_data() is None:
             self._keys().delete_password(APP_SERVICE, profile.id)
         self._write([p for p in existing if p.id != profile.id] + [profile])
+
+    def add_imported(self, profiles):
+        existing = self.list()
+        keys = {(p.name.casefold(), p.protocol, p.host.casefold(), p.port, p.username) for p in existing}
+        added = 0
+        for profile in profiles:
+            profile.validate()
+            key = profile.name.casefold(), profile.protocol, profile.host.casefold(), profile.port, profile.username
+            if key not in keys:
+                existing.append(profile)
+                keys.add(key)
+                added += 1
+        if added:
+            self._write(existing)
+        return added
 
     def delete(self, profile_id: str):
         existing = self.list()
         old = next((p for p in existing if p.id == profile_id), None)
-        if old and old.save_password:
+        if old and old.save_password and portable_data() is None:
             self._keys().delete_password(APP_SERVICE, profile_id)
         self._write([p for p in existing if p.id != profile_id])
 
     def get_password(self, profile: Profile) -> str:
-        if not profile.save_password:
+        if not profile.save_password or portable_data() is not None:
             return ''
         return self._keys().get_password(APP_SERVICE, profile.id) or ''

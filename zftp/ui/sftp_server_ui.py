@@ -13,6 +13,8 @@ from zftp.servers.server_core import ServerAccount
 from zftp.servers.sftp_server_core import (SFTPServerConfig, SFTPServerController,
     generate_host_key, host_key_fingerprint, validate_sftp_setup)
 
+from zftp.ui.server_clients import clients_button
+
 
 class SFTPEvents(QObject):
     log = Signal(str)
@@ -64,6 +66,7 @@ class SFTPServerPanel(QWidget):
         self.stop_btn = QPushButton('Stop SFTP server')
         self.status = QLabel('Stopped')
         control_row.addWidget(self.start_btn); control_row.addWidget(self.stop_btn); control_row.addWidget(self.status, 1)
+        control_row.addWidget(clients_button(self))
         layout.addLayout(control_row)
         layout.addWidget(QLabel('SSH/SFTP activity (current session only)'))
         self.activity = QTextEdit(); self.activity.setReadOnly(True); self.activity.setMaximumHeight(140)

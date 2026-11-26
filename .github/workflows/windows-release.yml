@@ -71,6 +71,21 @@ jobs:
           }
           & (Join-Path $installDir 'Update-ZFTP.ps1') -CheckOnly
           if (!$?) { throw 'The updater check failed' }
+      - name: Smoke-test portable installation
+        shell: powershell
+        run: |
+          $portable = Join-Path $env:RUNNER_TEMP 'Z FTP portable smoke test'
+          $installer = "installer_output/ZFTP_Setup_v$env:ZFTP_BUILD_VERSION.exe"
+          $setup = Start-Process -FilePath $installer -ArgumentList @(
+            '/PORTABLE=1', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$portable`""
+          ) -Wait -PassThru
+          if ($setup.ExitCode -ne 0 -or !(Test-Path (Join-Path $portable 'ZFTP.exe')) -or
+              !(Test-Path (Join-Path $portable 'zftp-portable.ini')) -or (Get-ChildItem $portable -Filter 'unins*.exe')) {
+            throw 'Portable setup did not produce a standalone folder'
+          }
+          if (!(Select-String -LiteralPath (Join-Path $portable 'zftp-portable.ini') -Pattern '^Portable=1$')) {
+            throw 'Portable setup marker is invalid'
+          }
       - name: Upload installer for manual build
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from threading import Event
 from typing import Any
 from zftp.protocols.ftp_engine import RemoteEntry
+from zftp.transfers.reliable_transfer import SharedRateLimiter
 
 @dataclass
 class ConnectionSession:
@@ -20,6 +21,10 @@ class ConnectionSession:
     generation: int = 0
     downloads: dict[str, Event] = field(default_factory=dict)
     parallel_downloads: bool = True
+    display_name: str = ""
+    bandwidth_kib: int = 0
+    limiter: SharedRateLimiter = field(default_factory=SharedRateLimiter)
+    pending_folder_scans: list = field(default_factory=list)
 
     @property
     def active(self):
