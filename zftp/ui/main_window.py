@@ -467,7 +467,7 @@ class MainWindow(TrayControlsMixin, FileBrowserMixin, TransfersViewMixin,
         self.queue_table.setAlternatingRowColors(True)
         self.queue_table.verticalHeader().setDefaultSectionSize(25)
         self.queue_table.setShowGrid(False)
-        self.queue_table.verticalHeader().setDefaultSectionSize(42)
+        self.queue_table.verticalHeader().setDefaultSectionSize(49)
         self.queue_table.setMinimumHeight(100)
         self.queue_table.setColumnWidth(1, 105)
         self.queue_table.setColumnWidth(3, 145)

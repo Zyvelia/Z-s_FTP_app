@@ -36,6 +36,20 @@ def system_tar():
     return which('bsdtar')
 
 
+def find_rar_extractor():
+    if os.name == 'nt':
+        for variable in ('ProgramFiles', 'ProgramFiles(x86)'):
+            if root := os.environ.get(variable):
+                for setting, relative in (('UNRAR_TOOL', 'WinRAR/UnRAR.exe'), ('SEVENZIP_TOOL', '7-Zip/7z.exe')):
+                    candidate = Path(root) / relative
+                    if candidate.is_file():
+                        setattr(rarfile, setting, str(candidate))
+    try:
+        rarfile.tool_setup(bsdtar=False)
+    except rarfile.RarCannotExec as error:
+        raise ValueError('Install UnRAR or 7-Zip to preview this RAR entry.') from error
+
+
 def read_rar_with_tar(executable, path, member):
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     with subprocess.Popen(
@@ -183,10 +197,7 @@ def archive_member(source, kind, member, password=None):
                 raise ValueError('This compressed RAR entry has an unsupported name.')
             executable = None if encrypted else system_tar()
             if executable is None:
-                try:
-                    rarfile.tool_setup(bsdtar=False)
-                except rarfile.RarCannotExec as error:
-                    raise ValueError('Compressed RAR previews require the system tar utility, 7-Zip, or UnRAR.') from error
+                find_rar_extractor()
             if source.seek(0, 2) > ARCHIVE_READ_LIMIT:
                 raise ValueError('Compressed RAR previews need an archive within the 16 MiB preview budget.')
             source.seek(0)

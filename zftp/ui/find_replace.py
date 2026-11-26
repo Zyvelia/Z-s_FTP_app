@@ -1,20 +1,21 @@
 """Find, highlight and replace text in the built-in editor."""
 
-from bisect import bisect_left
-from itertools import islice
+from array import array
+from bisect import bisect_left, bisect_right
 import regex as re
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import QCheckBox, QGridLayout, QLabel, QLineEdit, QPushButton, QTextEdit, QWidget
-
-HIGHLIGHT_LIMIT = 10000
 
 
 class FindReplace(QWidget):
     def __init__(self, editor):
         super().__init__()
         self.editor = editor
+        self.starts = array('I')
+        self.ends = array('I')
+        self.shown = None
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.query = QLineEdit()
@@ -45,7 +46,10 @@ class FindReplace(QWidget):
         self.timer = QTimer(self, interval=110, singleShot=True)
         self.timer.timeout.connect(self.refresh)
         self.query.textChanged.connect(self.schedule)
-        editor.textChanged.connect(self.schedule)
+        editor.textChanged.connect(self.reset_matches)
+        editor.updateRequest.connect(self.update_visible_matches)
+        editor.verticalScrollBar().valueChanged.connect(self.update_visible_matches)
+        editor.horizontalScrollBar().valueChanged.connect(self.update_visible_matches)
         for option in (self.case_sensitive, self.whole_word, self.regular):
             option.toggled.connect(self.schedule)
         self.query.returnPressed.connect(lambda: self.step(1))
@@ -72,12 +76,19 @@ class FindReplace(QWidget):
 
     def close_find(self):
         self.hide()
+        self.shown = None
         self.editor.setExtraSelections([])
         self.editor.setFocus()
 
     def schedule(self, *_):
         if self.isVisible():
             self.timer.start()
+
+    def reset_matches(self):
+        self.starts, self.ends = array('I'), array('I')
+        self.shown = None
+        self.update_visible_matches()
+        self.schedule()
 
     def pattern(self):
         if not self.query.text():
@@ -96,7 +107,7 @@ class FindReplace(QWidget):
     def character_positions(text):
         if text.isascii():
             return range(len(text) + 1)
-        result = [0]
+        result = array('I', [0])
         for character in text:
             result.append(result[-1] + (2 if ord(character) > 0xffff else 1))
         return result
@@ -104,22 +115,42 @@ class FindReplace(QWidget):
     def refresh(self):
         if not self.isVisible():
             return
-        selections = []
+        starts, ends = array('I'), array('I')
         try:
             text, matches = self.matches()
             positions = self.character_positions(text)
-            for match in islice(matches, HIGHLIGHT_LIMIT):
-                highlight = QTextEdit.ExtraSelection()
-                highlight.cursor = self.editor.textCursor()
-                highlight.cursor.setPosition(positions[match.start()])
-                highlight.cursor.setPosition(positions[match.end()], QTextCursor.KeepAnchor)
-                highlight.format.setBackground(QColor('#88673c'))
-                highlight.format.setForeground(QColor('#ffffff'))
-                selections.append(highlight)
-            more = next(matches, None) is not None
-            self.result.setText(f'{len(selections):,}{"+" if more else ""} matches')
+            for match in matches:
+                starts.append(positions[match.start()])
+                ends.append(positions[match.end()])
+            self.result.setText(f'{len(starts):,} matches')
         except (re.error, TimeoutError) as error:
+            starts, ends = array('I'), array('I')
             self.result.setText(str(error))
+        self.starts, self.ends = starts, ends
+        self.shown = None
+        self.update_visible_matches()
+
+    def update_visible_matches(self, *_):
+        if not self.isVisible():
+            return
+        viewport = self.editor.viewport()
+        top = self.editor.cursorForPosition(QPoint(0, 0)).position()
+        bottom = self.editor.cursorForPosition(QPoint(viewport.width() - 1, viewport.height() - 1)).position()
+        # Keep the paint selections bounded to what is visible, while retaining all match offsets.
+        left = bisect_left(self.ends, top)
+        right = bisect_right(self.starts, bottom)
+        if self.shown == (left, right):
+            return
+        self.shown = left, right
+        selections = []
+        for first, last in zip(self.starts[left:right], self.ends[left:right]):
+            highlight = QTextEdit.ExtraSelection()
+            highlight.cursor = self.editor.textCursor()
+            highlight.cursor.setPosition(first)
+            highlight.cursor.setPosition(last, QTextCursor.KeepAnchor)
+            highlight.format.setBackground(QColor('#88673c'))
+            highlight.format.setForeground(QColor('#ffffff'))
+            selections.append(highlight)
         self.editor.setExtraSelections(selections)
 
     def step(self, direction):

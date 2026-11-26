@@ -899,7 +899,8 @@ class FileBrowserMixin(Ps3FileToolsMixin, FormatPreviewMixin):
             layout.addWidget(QLabel(f'{len(results)} result(s) under {root} (limit 2000)'))
             listing = QListWidget()
             for path, is_dir, size in results:
-                listing.addItem(self.private_text(('Folder  ' if is_dir else 'File       ') + path))
+                detail = 'Folder' if is_dir else self.display_size(size) if size is not None else 'File'
+                listing.addItem(self.private_text(f'{detail} · {path}'))
             layout.addWidget(listing)
             close = QPushButton('Close'); close.clicked.connect(dialog.accept)
             layout.addWidget(close); dialog.exec()

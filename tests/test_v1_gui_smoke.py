@@ -423,6 +423,24 @@ class GUIv1SmokeTests(unittest.TestCase):
         window.render_queue()
         self.assertEqual(window.queue_table.item(0, 5).text(), 'Size unknown')
 
+    def test_find_matches_are_highlighted_and_replace_honors_filters(self):
+        from zftp.ui.file_preview import FilePreviewDialog
+
+        dialog = FilePreviewDialog('sample.txt', b'DLC dlc addons DLC1\nDLC', Mock())
+        self.addCleanup(dialog.close)
+        dialog.show()
+        dialog.find_panel.open_find()
+        dialog.find_panel.query.setText('DLC')
+        dialog.find_panel.whole_word.setChecked(True)
+        dialog.find_panel.case_sensitive.setChecked(True)
+        dialog.find_panel.refresh()
+        self.assertEqual(dialog.find_panel.result.text(), '2 matches')
+        self.assertEqual(len(dialog.viewer.extraSelections()), 2)
+        dialog.edit.click()
+        dialog.find_panel.replacement.setText('patch')
+        dialog.find_panel.replace(True)
+        self.assertEqual(dialog.viewer.toPlainText(), 'patch dlc addons DLC1\npatch')
+
     def test_cusa_sibling_folders_keep_distinct_destinations_and_compact_rows(self):
         window = MainWindow()
         self.addCleanup(window.close)

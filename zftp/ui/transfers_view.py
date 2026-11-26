@@ -482,7 +482,7 @@ class TransfersViewMixin:
             bar.setProperty('complete', item.status == 'Completed')
             if item.children and folder is not None and folder.bytes_total:
                 bar_row.setDirection(QHBoxLayout.TopToBottom)
-                bar_row.setSpacing(0)
+                bar_row.setSpacing(2)
                 bar_row.addWidget(bar)
                 label = QLabel(f'{item.count:,} of {item.total:,} items')
                 label.setAlignment(Qt.AlignCenter)
